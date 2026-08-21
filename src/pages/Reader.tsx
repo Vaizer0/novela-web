@@ -175,11 +175,8 @@ export default function Reader() {
   /** Wrap the currently spoken word in a <mark>. */
   function highlight(text: string, pos: TtsWordPos | null, para: number, isSpoken: boolean): ReactNode {
     if (!pos || pos.para !== para) return text;
-    // highlight the original column only when no translation is shown
-    if (translated && isSpoken === false && translated !== null) {
-      // spoken column is the translated one; skip original
-      return text;
-    }
+    // when translation is shown, only the translated column is spoken
+    if (translated && !isSpoken) return text;
     const { start, end } = pos;
     if (start < 0 || end > text.length || start >= end) return text;
     return (
@@ -386,8 +383,12 @@ export default function Reader() {
           <div className="bilingual">
             {paragraphs.map((p, i) => (
               <div key={i} className="bi-row">
-                <p id={`para-${i}`}>{highlight(p, ttsWord, i, false)}</p>
-                <p>{highlight(translated[i] ?? "", ttsWord, i, true)}</p>
+                <p id={`para-${i}`} className={ttsWord?.para === i ? "tts-active" : undefined}>
+                  {highlight(p, ttsWord, i, false)}
+                </p>
+                <p className={ttsWord?.para === i ? "tts-active" : undefined}>
+                  {highlight(translated[i] ?? "", ttsWord, i, true)}
+                </p>
               </div>
             ))}
           </div>
@@ -395,7 +396,11 @@ export default function Reader() {
         {paragraphs.length > 0 && !translated && (
           <div>
             {paragraphs.map((p, i) => (
-              <p key={i} id={`para-${i}`}>
+              <p
+                key={i}
+                id={`para-${i}`}
+                className={ttsWord?.para === i ? "tts-active" : undefined}
+              >
                 {highlight(p, ttsWord, i, false)}
               </p>
             ))}

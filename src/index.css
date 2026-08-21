@@ -317,9 +317,27 @@ button:disabled {
   }
 }
 
+.tts-bar {
+  position: sticky;
+  top: 3.2rem;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: Canvas;
+}
+
+/* paragraph currently being spoken */
+.tts-active {
+  background: rgba(255, 193, 7, 0.22);
+  border-radius: 4px;
+  transition: background 0.3s ease;
+}
+
+/* individual spoken word */
 .tts-word {
-  background: #ffd54f;
-  color: inherit;
+  background: #ffb300;
+  color: #1a1a1a;
   border-radius: 3px;
-  padding: 0 1px;
+  padding: 0 2px;
 }

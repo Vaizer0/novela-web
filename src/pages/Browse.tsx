@@ -397,7 +397,18 @@ export default function Browse() {
         </div>
       )}
 
-      {error && <p className="error">{error}</p>}
+      {error && (
+        <p className="error">
+          {error}
+          {/cloudflare-blocked/i.test(error) && (
+            <span className="muted small">
+              {" "}
+              This site blocks server-side fetchers. Run a FlareSolverr proxy and
+              add its URL in Settings → Cloudflare bypass.
+            </span>
+          )}
+        </p>
+      )}
       {activeEntry && <p className="muted small">Source: {activeEntry.name}</p>}
 
       {searchGroups ? (

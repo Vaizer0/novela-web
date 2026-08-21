@@ -7,11 +7,14 @@ import {
   setTranslationConfig,
   type TranslationConfig,
 } from "../lib/translate";
+import { getBypassProxyUrl, setBypassProxyUrl } from "../lib/bypass";
 
 export default function Settings() {
   const [msg, setMsg] = useState("");
   const navigate = useNavigate();
   const [trCfg, setTrCfg] = useState<TranslationConfig>(getTranslationConfig);
+  const [bypassUrl, setBypassUrl] = useState(getBypassProxyUrl);
+  const [bypassStatus, setBypassStatus] = useState("");
 
   function updateTrCfg(patch: Partial<TranslationConfig>): void {
     setTrCfg((c) => {
@@ -19,6 +22,31 @@ export default function Settings() {
       setTranslationConfig(next);
       return next;
     });
+  }
+
+  async function testBypass(): Promise<void> {
+    if (!bypassUrl.trim()) {
+      setBypassStatus("Enter a FlareSolverr URL first (e.g. http://localhost:8191)");
+      return;
+    }
+    setBypassProxyUrl(bypassUrl);
+    setBypassStatus("Testing against freewebnovel.com…");
+    try {
+      const res = await fetch(`${bypassUrl.trim().replace(/\/$/, "")}/v1`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cmd: "request.get", url: "https://freewebnovel.com/", maxTimeout: 60000 }),
+      });
+      const data = (await res.json()) as { status?: string; solution?: { response?: string } };
+      const html = data.solution?.response ?? "";
+      if (data.status === "ok" && /<html/i.test(html) && !/just a moment/i.test(html)) {
+        setBypassStatus("✓ Working — Cloudflare-protected sources are now available.");
+      } else {
+        setBypassStatus("✗ Proxy reachable but the site is still blocked.");
+      }
+    } catch {
+      setBypassStatus("✗ Could not reach the bypass proxy. Is it running?");
+    }
   }
 
   function importBook(file: File): void {
@@ -174,6 +202,33 @@ export default function Settings() {
           Google backends run through the server proxy; Gemini/OpenAI are called
           directly from your browser. Keys stay in this browser only.
         </p>
+      </div>
+
+      <h2>Cloudflare bypass</h2>
+      <div className="card">
+        <p className="muted small">
+          Some sources (freewebnovel, novelfire, novelphoenix, …) block
+          server-side fetchers via Cloudflare. Running a{" "}
+          <a href="https://github.com/FlareSolverr/FlareSolverr" target="_blank" rel="noreferrer">
+            FlareSolverr
+          </a>{" "}
+          instance (free, Docker: <code>ghcr.io/flaresolverr/flaresolverr</code>)
+          and entering its URL here makes them work.
+        </p>
+        <label>
+          FlareSolverr URL
+          <input
+            type="text"
+            placeholder="http://localhost:8191"
+            value={bypassUrl}
+            onChange={(e) => setBypassUrl(e.target.value)}
+            onBlur={() => setBypassProxyUrl(bypassUrl)}
+          />
+        </label>
+        <div className="row">
+          <button onClick={() => void testBypass()}>Save &amp; test</button>
+        </div>
+        {bypassStatus && <p className="muted small">{bypassStatus}</p>}
       </div>
 
       <h2>Local books</h2>

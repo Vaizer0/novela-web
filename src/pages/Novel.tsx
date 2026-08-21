@@ -101,7 +101,8 @@ export default function Novel() {
       <div className="page">
         <p className="error">{error}</p>
         <p className="muted">
-          If this source is behind Cloudflare it cannot work from a web server.
+          This source is behind Cloudflare. Run a FlareSolverr proxy and add its
+          URL in Settings → Cloudflare bypass to enable it.
         </p>
       </div>
     );

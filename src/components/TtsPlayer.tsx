@@ -78,9 +78,11 @@ export function TtsPlayer({ paragraphs, speakTexts, lang, onWord, onAdvance }: T
         return;
       }
       setCurrent(i);
+      // activate the paragraph immediately (works even if the browser never
+      // fires word-boundary events); start:-1 means "no word mark yet"
+      onWord?.({ para: i, start: -1, end: -1 });
       const text = textsRef.current[i];
-      const el = document.getElementById(`para-${i}`);
-      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      document.getElementById(`para-${i}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
 
       const u = new SpeechSynthesisUtterance(text);
       u.rate = atRate ?? rateRef.current;
@@ -88,11 +90,10 @@ export function TtsPlayer({ paragraphs, speakTexts, lang, onWord, onAdvance }: T
       const voice = pickVoice(lang);
       if (voice) u.voice = voice;
       u.onboundary = (ev: SpeechSynthesisEvent) => {
-        if (stoppedRef.current || ev.name === "sentence") return;
+        if (stoppedRef.current) return;
         if (ev.name && ev.name !== "word") return;
-        // find the word containing charIndex
         let start = ev.charIndex;
-        if (!/^\s/.test(text.slice(start, start + 1)) && start > 0 && !/\s/.test(text[start - 1])) {
+        if (start > 0 && !/\s/.test(text[start - 1])) {
           while (start > 0 && !/\s/.test(text[start - 1])) start--;
         }
         let end = start;

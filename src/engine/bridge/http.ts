@@ -1,5 +1,6 @@
 import { getCookiesFor, storeSetCookies } from "./storage";
 import { FETCH_ENDPOINT } from "../../lib/api";
+import { fetchViaBypass, getBypassProxyUrl, isCfBlocked } from "../../lib/bypass";
 
 /**
  * HTTP bridge: http_get / http_post / http_get_batch.
@@ -26,19 +27,37 @@ export type PageFetcher = (url: string, init: {
   body?: string;
   charset?: string;
 }) => Promise<FetchEnvelope>;
-
-/** Default fetcher: POST to the /api/fetch Netlify function. */
+/**
+ * Default fetcher: POST to the Netlify function. When the response looks like
+ * a Cloudflare challenge and a bypass proxy (FlareSolverr) is configured, the
+ * request is retried through it automatically.
+ */
 export const defaultFetcher: PageFetcher = async (url, init) => {
+  let env: FetchEnvelope;
   try {
     const res = await fetch(FETCH_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url, ...init }),
     });
-    return (await res.json()) as FetchEnvelope;
+    env = (await res.json()) as FetchEnvelope;
   } catch (e) {
     return { success: false, body: "", code: -1, headers: {}, error: e instanceof Error ? e.message : String(e) };
   }
+  if (isCfBlocked(env)) {
+    const bypass = getBypassProxyUrl();
+    if (bypass !== "") {
+      const retried = await fetchViaBypass(bypass, url);
+      if (retried.success || !isCfBlocked(retried)) return retried;
+      return { ...env, error: "Cloudflare-blocked (bypass proxy also failed)" };
+    }
+    return {
+      ...env,
+      success: false,
+      error: "Cloudflare-blocked source — configure a bypass proxy in Settings → Cloudflare",
+    };
+  }
+  return env;
 };
 
 function refererFromUrl(url: string): string {
