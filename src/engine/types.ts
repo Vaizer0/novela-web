@@ -16,6 +16,12 @@ export interface ChapterResult {
   uploaded?: number | null;
 }
 
+export interface BookDetails extends BookResult {
+  genres: string[];
+  status?: string | null;
+  lastUpdate?: string | null;
+}
+
 export interface CatalogPage {
   items: BookResult[];
   hasNext: boolean;

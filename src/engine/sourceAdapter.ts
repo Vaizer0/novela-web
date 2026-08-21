@@ -1,8 +1,9 @@
 import { createSourceRuntime, type SourceRuntime } from "./luaHost";
-import { defaultFetcher, type PageFetcher } from "./bridge/http";
+import { defaultFetcher, type FetchEnvelope, type PageFetcher } from "./bridge/http";
 import { WASM_URI } from "./wasmUri";
 import type {
   ActiveFilters,
+  BookDetails,
   BookResult,
   CatalogPage,
   ChapterResult,
@@ -55,15 +56,16 @@ export class LuaSource {
   readonly hasParsePage: boolean;
   readonly hasGetPageList: boolean;
   readonly hasFilterList: boolean;
+  private readonly fetcher: PageFetcher;
   private readonly mutex = new Mutex();
 
   private readonly scriptTable: Record<string, unknown> | null;
-
   private constructor(
     runtime: SourceRuntime,
     meta: SourceMetadataInfo,
     flags: { hasParsePage: boolean; hasGetPageList: boolean; hasFilterList: boolean },
     scriptTable: Record<string, unknown> | null,
+    fetcher: PageFetcher,
   ) {
     this.runtime = runtime;
     this.meta = meta;
@@ -71,6 +73,12 @@ export class LuaSource {
     this.hasGetPageList = flags.hasGetPageList;
     this.hasFilterList = flags.hasFilterList;
     this.scriptTable = scriptTable;
+    this.fetcher = fetcher;
+  }
+
+  /** Fetch a page's HTML through this source's fetcher (proxy in the app). */
+  fetchPage(url: string): Promise<FetchEnvelope> {
+    return this.fetcher(url, {});
   }
   static async load(code: string, fileName?: string, fetcher: PageFetcher = defaultFetcher): Promise<LuaSource> {
     // Cheap pre-parse of the metadata header so registries can list sources
@@ -120,6 +128,7 @@ export class LuaSource {
         hasFilterList: has("getFilterList"),
       },
       scriptTable,
+      fetcher,
     );
   }
 
@@ -181,7 +190,7 @@ export class LuaSource {
     }
   }
 
-  async bookDetails(bookUrl: string): Promise<BookResult & { genres: string[]; status?: string | null; lastUpdate?: string | null }> {
+  async bookDetails(bookUrl: string): Promise<BookDetails> {
     const g = async <T>(fn: string): Promise<T | null> => {
       try {
         return await this.call<T>(fn, bookUrl);

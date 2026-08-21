@@ -1,23 +1,10 @@
 import { NavLink, Route, Routes } from "react-router-dom";
 import Extensions from "./pages/Extensions";
-
-function Home() {
-  return (
-    <div className="page">
-      <h1>NoveLA Web</h1>
-      <p className="muted">Novel reader — web port.</p>
-    </div>
-  );
-}
-
-function Browse() {
-  return (
-    <div className="page">
-      <h1>Browse</h1>
-      <p className="muted">Coming next.</p>
-    </div>
-  );
-}
+import Browse from "./pages/Browse";
+import Novel from "./pages/Novel";
+import Reader from "./pages/Reader";
+import Library from "./pages/Library";
+import Settings from "./pages/Settings";
 
 export default function App() {
   return (
@@ -31,9 +18,12 @@ export default function App() {
         <NavLink to="/settings">Settings</NavLink>
       </nav>
       <Routes>
-        <Route path="/" element={<Home />} />
+        <Route path="/" element={<Library />} />
         <Route path="/browse" element={<Browse />} />
+        <Route path="/novel" element={<Novel />} />
+        <Route path="/reader" element={<Reader />} />
         <Route path="/extensions" element={<Extensions />} />
+        <Route path="/settings" element={<Settings />} />
         <Route path="*" element={<div className="page">Not found</div>} />
       </Routes>
     </>
