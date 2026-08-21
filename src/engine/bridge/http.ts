@@ -1,4 +1,5 @@
 import { getCookiesFor, storeSetCookies } from "./storage";
+import { FETCH_ENDPOINT } from "../../lib/api";
 
 /**
  * HTTP bridge: http_get / http_post / http_get_batch.
@@ -29,7 +30,7 @@ export type PageFetcher = (url: string, init: {
 /** Default fetcher: POST to the /api/fetch Netlify function. */
 export const defaultFetcher: PageFetcher = async (url, init) => {
   try {
-    const res = await fetch("/api/fetch", {
+    const res = await fetch(FETCH_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url, ...init }),

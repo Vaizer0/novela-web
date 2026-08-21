@@ -1,4 +1,5 @@
 import { getEnabledSources, getSourceRuntime, listSources, type SourceEntry } from "../engine/registry";
+import { rawImageUrl } from "./api";
 
 export { getSourceRuntime };
 /** Enabled registry entries (all bundled+custom when no explicit set stored). */
@@ -17,5 +18,5 @@ export async function findEntry(id: string): Promise<SourceEntry | undefined> {
 /** Route images through the raw proxy: avoids hotlink blocks and CORS noise. */
 export function rawImg(url: string): string {
   if (!url) return "";
-  return `/api/fetch/raw?url=${encodeURIComponent(url)}`;
+  return rawImageUrl(url);
 }

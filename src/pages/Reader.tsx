@@ -1,11 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { findEntry, getSourceRuntime, rawImg } from "../lib/sources";
 import { db } from "../db/db";
 import { applyRules, getRules } from "../lib/cleanup";
 import { LOCAL_SOURCE_ID } from "../lib/localImport";
 import { TtsPlayer } from "../components/TtsPlayer";
-import { getTranslationConfig, translateParagraphs } from "../lib/translate";
+import {
+  getTranslationConfig,
+  getBookTranslationSettings,
+  setBookTranslationSettings,
+  getBookTranslateEnabled,
+  setBookTranslateEnabled,
+  translateParagraphs,
+  type TranslationConfig,
+} from "../lib/translate";
+import type { TtsWordPos } from "../components/TtsPlayer";
 
 interface ReaderSettings {
   fontSize: number;
@@ -40,7 +49,8 @@ export default function Reader() {
   const [translated, setTranslated] = useState<string[] | null>(null);
   const [translating, setTranslating] = useState(false);
   const [trProgress, setTrProgress] = useState({ done: 0, total: 0 });
-  const [trConfig] = useState(() => getTranslationConfig());
+  const [trConfig, setTrConfig] = useState<TranslationConfig>(() => getTranslationConfig());
+  const [ttsWord, setTtsWord] = useState<TtsWordPos | null>(null);
   const [nav, setNav] = useState<{ prev: string | null; next: string | null; title: string }>({
     prev: null,
     next: null,
@@ -48,7 +58,6 @@ export default function Reader() {
   });
   const saveTimer = useRef<number>(0);
 
-  // Chapter list for prev/next navigation.
   useEffect(() => {
     if (!bookUrl) return;
     void db.chapters
@@ -64,6 +73,15 @@ export default function Reader() {
         });
       });
   }, [bookUrl, chapterUrl]);
+
+  // Load per-book translation settings (falls back to global config).
+  useEffect(() => {
+    if (!bookUrl) return;
+    void (async () => {
+      setTrConfig(await getBookTranslationSettings(bookUrl));
+      setTranslateOn(await getBookTranslateEnabled(bookUrl));
+    })();
+  }, [bookUrl]);
 
   // Fetch chapter content.
   useEffect(() => {
@@ -154,6 +172,24 @@ export default function Reader() {
       }
     });
   }, [text, pages, bookUrl, chapterUrl]);
+  /** Wrap the currently spoken word in a <mark>. */
+  function highlight(text: string, pos: TtsWordPos | null, para: number, isSpoken: boolean): ReactNode {
+    if (!pos || pos.para !== para) return text;
+    // highlight the original column only when no translation is shown
+    if (translated && isSpoken === false && translated !== null) {
+      // spoken column is the translated one; skip original
+      return text;
+    }
+    const { start, end } = pos;
+    if (start < 0 || end > text.length || start >= end) return text;
+    return (
+      <>
+        {text.slice(0, start)}
+        <mark className="tts-word">{text.slice(start, end)}</mark>
+        {text.slice(end)}
+      </>
+    );
+  }
 
   function chapterHref(url: string | null): string {
     if (!url) return "";
@@ -262,14 +298,66 @@ export default function Reader() {
               <option value="dark">Dark</option>
             </select>
           </label>
+
+          <hr />
           <label className="inline">
             <input
               type="checkbox"
               checked={translateOn}
-              onChange={(e) => setTranslateOn(e.target.checked)}
+              onChange={(e) => {
+                setTranslateOn(e.target.checked);
+                void setBookTranslateEnabled(bookUrl, e.target.checked);
+              }}
             />
-            Translate ({trConfig.backend}, →{trConfig.toLang})
+            Translate
           </label>
+          <label>
+            Backend
+            <select
+              value={trConfig.backend}
+              onChange={(e) => {
+                const cfg = { ...trConfig, backend: e.target.value as TranslationConfig["backend"] };
+                setTrConfig(cfg);
+                void setBookTranslationSettings(bookUrl, cfg);
+              }}
+            >
+              <option value="google-simple">Google (simple)</option>
+              <option value="google-enhanced">Google (batch)</option>
+              <option value="gemini">Gemini</option>
+              <option value="openai-compatible">OpenAI-compatible</option>
+            </select>
+          </label>
+          <div className="row">
+            <label className="inline">
+              from
+              <input
+                type="text"
+                size={4}
+                value={trConfig.fromLang}
+                onChange={(e) => {
+                  const cfg = { ...trConfig, fromLang: e.target.value };
+                  setTrConfig(cfg);
+                  void setBookTranslationSettings(bookUrl, cfg);
+                }}
+              />
+            </label>
+            <label className="inline">
+              to
+              <input
+                type="text"
+                size={4}
+                value={trConfig.toLang}
+                onChange={(e) => {
+                  const cfg = { ...trConfig, toLang: e.target.value };
+                  setTrConfig(cfg);
+                  void setBookTranslationSettings(bookUrl, cfg);
+                }}
+              />
+            </label>
+          </div>
+          {(trConfig.backend === "gemini" || trConfig.backend === "openai-compatible") && (
+            <p className="muted small">API keys are configured in Settings → Translation.</p>
+          )}
           {translating && (
             <span className="muted small">
               Translating {trProgress.done}/{trProgress.total}…
@@ -281,6 +369,9 @@ export default function Reader() {
       {paragraphs.length > 0 && (
         <TtsPlayer
           paragraphs={paragraphs}
+          speakTexts={translated ?? paragraphs}
+          lang={translated ? trConfig.toLang : ""}
+          onWord={setTtsWord}
           onAdvance={() => {
             if (nav.next) window.location.href = chapterHref(nav.next);
           }}
@@ -295,8 +386,8 @@ export default function Reader() {
           <div className="bilingual">
             {paragraphs.map((p, i) => (
               <div key={i} className="bi-row">
-                <p id={`para-${i}`}>{p}</p>
-                <p>{translated[i]}</p>
+                <p id={`para-${i}`}>{highlight(p, ttsWord, i, false)}</p>
+                <p>{highlight(translated[i] ?? "", ttsWord, i, true)}</p>
               </div>
             ))}
           </div>
@@ -305,7 +396,7 @@ export default function Reader() {
           <div>
             {paragraphs.map((p, i) => (
               <p key={i} id={`para-${i}`}>
-                {p}
+                {highlight(p, ttsWord, i, false)}
               </p>
             ))}
           </div>

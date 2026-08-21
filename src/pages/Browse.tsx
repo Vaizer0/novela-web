@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getEnabledEntries } from "../lib/sources";
+import { rawImageUrl } from "../lib/api";
 import { getSourceRuntime, type SourceEntry } from "../engine/registry";
 import type { ActiveFilters, BookResult, LuaFilter } from "../engine/types";
 import { BookGrid } from "../components/BookGrid";
@@ -220,7 +221,7 @@ export default function Browse() {
             onClick={() => setActiveId(s.id)}
             title={s.name}
           >
-            <img src={`/api/fetch/raw?url=${encodeURIComponent(s.icon)}`} alt="" loading="lazy" />
+            <img src={rawImageUrl(s.icon)} alt="" loading="lazy" />
             <span>{s.name}</span>
           </button>
         ))}

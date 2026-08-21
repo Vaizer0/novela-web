@@ -1,4 +1,5 @@
 import { db } from "../db/db";
+import { FETCH_ENDPOINT } from "./api";
 
 export type TranslationBackend =
   | "google-simple"
@@ -38,6 +39,37 @@ export function setTranslationConfig(cfg: TranslationConfig): void {
   localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
 }
 
+/** Per-book translation settings stored in Dexie, falling back to global. */
+export async function getBookTranslationSettings(
+  bookUrl: string,
+): Promise<TranslationConfig> {
+  const row = await db.translationSettings.get(bookUrl);
+  const global = getTranslationConfig();
+  if (!row) return global;
+  return { ...global, backend: row.backend, fromLang: row.fromLang, toLang: row.toLang };
+}
+
+export async function setBookTranslationSettings(
+  bookUrl: string,
+  cfg: Pick<TranslationConfig, "backend" | "fromLang" | "toLang">,
+): Promise<void> {
+  const existing = await db.translationSettings.get(bookUrl);
+  await db.translationSettings.put({ ...existing, bookUrl, ...cfg, enabled: existing?.enabled ?? false });
+}
+
+export async function getBookTranslateEnabled(bookUrl: string): Promise<boolean> {
+  const row = await db.translationSettings.get(bookUrl);
+  return row?.enabled ?? false;
+}
+
+export async function setBookTranslateEnabled(bookUrl: string, enabled: boolean): Promise<void> {
+  const row = (await db.translationSettings.get(bookUrl)) ?? {
+    bookUrl,
+    ...getTranslationConfig(),
+  };
+  await db.translationSettings.put({ ...row, bookUrl, enabled });
+}
+
 async function sha256Hex(s: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
   return Array.from(new Uint8Array(buf))
@@ -51,7 +83,7 @@ function cacheKey(backend: string, cfg: TranslationConfig, text: string): Promis
 
 /** POST through the serverless proxy (google endpoints block browser CORS). */
 async function viaProxy(url: string, init?: RequestInit): Promise<Response> {
-  const res = await fetch("/api/fetch", {
+  const res = await fetch(`${FETCH_ENDPOINT}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ url, method: init?.method ?? "GET", headers: init?.headers as Record<string, string>, body: typeof init?.body === "string" ? init.body : undefined }),

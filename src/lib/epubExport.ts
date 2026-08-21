@@ -3,6 +3,7 @@ import type { SourceEntry } from "../engine/registry";
 import type { LuaSource } from "../engine/sourceAdapter";
 import { getSourceRuntime } from "../engine/registry";
 import { db } from "../db/db";
+import { rawImageUrl } from "./api";
 
 function esc(s: string): string {
   return s
@@ -26,7 +27,7 @@ ${paragraphs.map((p) => `<p>${esc(p)}</p>`).join("\n")}
 
 async function fetchBinary(url: string): Promise<ArrayBuffer | null> {
   try {
-    const res = await fetch(`/api/fetch/raw?url=${encodeURIComponent(url)}`);
+    const res = await fetch(rawImageUrl(url));
     if (!res.ok) return null;
     return await res.arrayBuffer();
   } catch {

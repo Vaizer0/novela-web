@@ -2,10 +2,24 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { db } from "../db/db";
 import { importLocalFile } from "../lib/localImport";
+import {
+  getTranslationConfig,
+  setTranslationConfig,
+  type TranslationConfig,
+} from "../lib/translate";
 
 export default function Settings() {
   const [msg, setMsg] = useState("");
   const navigate = useNavigate();
+  const [trCfg, setTrCfg] = useState<TranslationConfig>(getTranslationConfig);
+
+  function updateTrCfg(patch: Partial<TranslationConfig>): void {
+    setTrCfg((c) => {
+      const next = { ...c, ...patch };
+      setTranslationConfig(next);
+      return next;
+    });
+  }
 
   function importBook(file: File): void {
     void (async () => {
@@ -82,6 +96,86 @@ export default function Settings() {
         </label>
       </div>
 
+      <h2>Translation</h2>
+      <div className="card">
+        <label>
+          Backend
+          <select
+            value={trCfg.backend}
+            onChange={(e) => updateTrCfg({ backend: e.target.value as TranslationConfig["backend"] })}
+          >
+            <option value="google-simple">Google (simple)</option>
+            <option value="google-enhanced">Google (batch)</option>
+            <option value="gemini">Gemini</option>
+            <option value="openai-compatible">OpenAI-compatible</option>
+          </select>
+        </label>
+        <div className="row">
+          <label className="inline">
+            from
+            <input
+              type="text"
+              size={6}
+              placeholder="auto"
+              value={trCfg.fromLang}
+              onChange={(e) => updateTrCfg({ fromLang: e.target.value })}
+            />
+          </label>
+          <label className="inline">
+            to
+            <input
+              type="text"
+              size={6}
+              value={trCfg.toLang}
+              onChange={(e) => updateTrCfg({ toLang: e.target.value })}
+            />
+          </label>
+        </div>
+        {trCfg.backend === "gemini" && (
+          <label>
+            Gemini API key
+            <input
+              type="password"
+              value={trCfg.geminiKey ?? ""}
+              onChange={(e) => updateTrCfg({ geminiKey: e.target.value })}
+            />
+          </label>
+        )}
+        {trCfg.backend === "openai-compatible" && (
+          <>
+            <label>
+              Endpoint (e.g. https://api.openai.com/v1)
+              <input
+                type="text"
+                value={trCfg.openaiEndpoint ?? ""}
+                onChange={(e) => updateTrCfg({ openaiEndpoint: e.target.value })}
+              />
+            </label>
+            <label>
+              API key
+              <input
+                type="password"
+                value={trCfg.openaiKey ?? ""}
+                onChange={(e) => updateTrCfg({ openaiKey: e.target.value })}
+              />
+            </label>
+            <label>
+              Model
+              <input
+                type="text"
+                placeholder="gpt-4o-mini"
+                value={trCfg.openaiModel ?? ""}
+                onChange={(e) => updateTrCfg({ openaiModel: e.target.value })}
+              />
+            </label>
+          </>
+        )}
+        <p className="muted small">
+          Google backends run through the server proxy; Gemini/OpenAI are called
+          directly from your browser. Keys stay in this browser only.
+        </p>
+      </div>
+
       <h2>Local books</h2>
       <div className="row">
         <label>
@@ -97,6 +191,7 @@ export default function Settings() {
           />
         </label>
       </div>
+
       {msg && <p className="muted">{msg}</p>}
       <p className="muted small">
         Reader appearance settings live on the reader screen (Aa button).

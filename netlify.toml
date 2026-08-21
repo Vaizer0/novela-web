@@ -6,7 +6,7 @@
 # Function routes must precede the SPA catch-all (redirects shadow functions).
 [[redirects]]
   from = "/api/fetch/raw"
-  to = "/.netlify/functions/fetch?mode=raw"
+  to = "/.netlify/functions/raw"
   status = 200
 
 [[redirects]]

@@ -316,3 +316,10 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 }
+
+.tts-word {
+  background: #ffd54f;
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 1px;
+}
