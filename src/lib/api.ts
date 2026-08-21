@@ -6,7 +6,10 @@
  * pointed at the Netlify origin.
  */
 function computeApiBase(): string {
-  if (typeof location === "undefined") return "";
+  if (typeof location === "undefined") {
+    // node/test environment — use the deployed origin
+    return "https://novela-web.netlify.app";
+  }
   const host = location.hostname;
   if (host === "localhost" || host === "127.0.0.1" || host.endsWith(".netlify.app")) {
     return ""; // same-origin

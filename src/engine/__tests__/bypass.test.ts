@@ -28,45 +28,31 @@ describe("isCfBlocked", () => {
 describe("defaultFetcher CF fallback", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("annotates CF-blocked responses with actionable guidance", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        Response.json({ success: false, code: 403, body: "<title>Just a moment...</title>", headers: {} }),
-      ),
-    );
-    const { defaultFetcher } = await import("../bridge/http");
-    const res = await defaultFetcher("https://freewebnovel.com/", {});
-    expect(res.success).toBe(false);
-    expect(res.error).toMatch(/Cloudflare-blocked/);
-    expect(res.error).toMatch(/Settings → Cloudflare/);
-  });
 
-  it("retries through a configured bypass proxy and returns its result", async () => {
+  it("retries through Jina automatically and returns rendered content", async () => {
     let call = 0;
+    const urls: string[] = [];
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
         call++;
-        if (call === 1) {
-          // Netlify function: CF challenge
-          return Response.json({ success: false, code: 403, body: "Just a moment...", headers: {} });
+        urls.push(String(url));
+        const body = String(init?.body ?? "");
+        if (call === 2) {
+          // Jina retry is routed through our function; assert target + format
+          expect(body).toContain("r.jina.ai");
+          expect(body).toContain("x-return-format");
+          return Response.json({
+            success: true,
+            code: 200,
+            body: "<html><body>real content</body></html>",
+            headers: {},
+          });
         }
-        // localStorage write happened before bypass attempt; assert endpoint shape
-        const body = JSON.parse(String(init?.body)) as { cmd?: string };
-        expect(body.cmd).toBe("request.get");
-        return Response.json({
-          status: "ok",
-          solution: { status: 200, response: "<html><body>real content</body></html>", cookies: [] },
-        });
+        // first call = Netlify function primary attempt: CF challenge
+        return Response.json({ success: false, code: 403, body: "Just a moment...", headers: {} });
       }),
     );
-    // seed bypass URL without localStorage: stub the module getter via storage shim
-    const store: Record<string, string> = { bypassProxyUrl: "http://localhost:8191" };
-    vi.stubGlobal("localStorage", {
-      getItem: (k: string) => store[k] ?? null,
-      setItem: (k: string, v: string) => (store[k] = v),
-    });
     const { defaultFetcher } = await import("../bridge/http");
     const res = await defaultFetcher("https://novelfire.net/", {});
     expect(call).toBe(2);

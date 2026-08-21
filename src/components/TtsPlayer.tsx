@@ -31,6 +31,16 @@ function pickVoice(lang: string): SpeechSynthesisVoice | null {
   );
 }
 
+/** Char offsets of every whitespace-delimited word in `text`. */
+function wordOffsets(text: string): Array<{ start: number; end: number }> {
+  const out: Array<{ start: number; end: number }> = [];
+  const re = /\S+/g;
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+    out.push({ start: m.index, end: m.index + m[0].length });
+  }
+  return out;
+}
+
 /**
  * Web Speech API mini-player. Speaks paragraphs in order with word-level
  * highlighting and continuous auto-scroll, then stops (or advances chapter).
@@ -41,9 +51,10 @@ export function TtsPlayer({ paragraphs, speakTexts, lang, onWord, onAdvance }: T
   const [rate, setRate] = useState(1);
   const [current, setCurrent] = useState(-1);
   const stoppedRef = useRef(false);
+  // interval driving estimated word highlight when boundary events don't fire
+  const wordTimerRef = useRef<number | null>(null);
   // latest values for async utterance callbacks
   const rateRef = useRef(rate);
-  rateRef.current = rate;
   const textsRef = useRef(speakTexts);
   textsRef.current = speakTexts;
 
@@ -55,10 +66,13 @@ export function TtsPlayer({ paragraphs, speakTexts, lang, onWord, onAdvance }: T
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
   function stop(): void {
     stoppedRef.current = true;
     window.speechSynthesis.cancel();
+    if (wordTimerRef.current !== null) {
+      window.clearInterval(wordTimerRef.current);
+      wordTimerRef.current = null;
+    }
     setPlaying(false);
     setCurrent(-1);
     onWord?.(null);
@@ -78,11 +92,31 @@ export function TtsPlayer({ paragraphs, speakTexts, lang, onWord, onAdvance }: T
         return;
       }
       setCurrent(i);
-      // activate the paragraph immediately (works even if the browser never
-      // fires word-boundary events); start:-1 means "no word mark yet"
+      // activate the paragraph immediately; start:-1 = "no word mark yet"
       onWord?.({ para: i, start: -1, end: -1 });
       const text = textsRef.current[i];
       document.getElementById(`para-${i}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+
+      // Word highlight: many engines (notably Android Chrome) never fire
+      // boundary events, so drive highlighting from a timing estimate and
+      // switch to precise events when the engine does send them.
+      const words = wordOffsets(text);
+      let wi = 0;
+      let boundarySeen = false;
+      if (wordTimerRef.current !== null) window.clearInterval(wordTimerRef.current);
+      const msPerWord = 60000 / (165 * (atRate ?? rateRef.current)); // ~165 wpm at 1×
+      wordTimerRef.current = window.setInterval(() => {
+        if (stoppedRef.current || boundarySeen) {
+          if (wordTimerRef.current !== null) window.clearInterval(wordTimerRef.current);
+          wordTimerRef.current = null;
+          return;
+        }
+        if (wi < words.length) {
+          onWord?.({ para: i, ...words[wi] });
+          document.getElementById(`para-${i}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+          wi++;
+        }
+      }, msPerWord);
 
       const u = new SpeechSynthesisUtterance(text);
       u.rate = atRate ?? rateRef.current;
@@ -92,6 +126,11 @@ export function TtsPlayer({ paragraphs, speakTexts, lang, onWord, onAdvance }: T
       u.onboundary = (ev: SpeechSynthesisEvent) => {
         if (stoppedRef.current) return;
         if (ev.name && ev.name !== "word") return;
+        boundarySeen = true;
+        if (wordTimerRef.current !== null) {
+          window.clearInterval(wordTimerRef.current);
+          wordTimerRef.current = null;
+        }
         let start = ev.charIndex;
         if (start > 0 && !/\s/.test(text[start - 1])) {
           while (start > 0 && !/\s/.test(text[start - 1])) start--;
@@ -102,11 +141,19 @@ export function TtsPlayer({ paragraphs, speakTexts, lang, onWord, onAdvance }: T
         document.getElementById(`para-${i}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
       };
       u.onend = () => {
+        if (wordTimerRef.current !== null) {
+          window.clearInterval(wordTimerRef.current);
+          wordTimerRef.current = null;
+        }
         if (stoppedRef.current) return;
         onWord?.(null);
         speakNext(i + 1);
       };
       u.onerror = () => {
+        if (wordTimerRef.current !== null) {
+          window.clearInterval(wordTimerRef.current);
+          wordTimerRef.current = null;
+        }
         setPlaying(false);
         setCurrent(-1);
         onWord?.(null);

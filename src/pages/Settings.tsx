@@ -207,13 +207,14 @@ export default function Settings() {
       <h2>Cloudflare bypass</h2>
       <div className="card">
         <p className="muted small">
-          Some sources (freewebnovel, novelfire, novelphoenix, …) block
-          server-side fetchers via Cloudflare. Running a{" "}
+          Cloudflare-blocked sources (freewebnovel, novelfire, novelphoenix, …)
+          are fetched automatically through the Jina Reader service — no setup
+          needed. If a source still fails, you can optionally run a{" "}
           <a href="https://github.com/FlareSolverr/FlareSolverr" target="_blank" rel="noreferrer">
             FlareSolverr
           </a>{" "}
           instance (free, Docker: <code>ghcr.io/flaresolverr/flaresolverr</code>)
-          and entering its URL here makes them work.
+          and enter its URL here as a second fallback.
         </p>
         <label>
           FlareSolverr URL
