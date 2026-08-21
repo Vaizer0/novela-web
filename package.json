@@ -13,6 +13,7 @@
   "dependencies": {
     "dexie": "^4.4.5",
     "epubjs": "^0.3.93",
+    "iconv-lite": "^0.7.3",
     "jszip": "^3.10.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
@@ -21,10 +22,12 @@
   },
   "devDependencies": {
     "@netlify/functions": "^6.0.0",
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.4",
+    "jsdom": "^30.0.1",
     "netlify-cli": "^27.1.2",
     "oxlint": "^1.75.0",
     "tweetsodium": "^0.0.4",
