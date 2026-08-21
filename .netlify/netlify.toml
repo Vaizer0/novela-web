@@ -1,12 +1,8 @@
-redirectsOrigin = "config"
-plugins = []
 functionsDirectory = "/data/data/com.termux/files/home/novela-web/netlify/functions"
 functionsDirectoryOrigin = "config-v1"
+redirectsOrigin = "config"
+plugins = []
 headers = []
-
-[functions]
-
-[functions."*"]
 
 [build]
 publish = "/data/data/com.termux/files/home/novela-web/dist"
@@ -29,9 +25,13 @@ functions = "/data/data/com.termux/files/home/novela-web/netlify/functions"
 
 [build.services]
 
+[functions]
+
+[functions."*"]
+
 [[redirects]]
-from = "/api/fetch"
-to = "/.netlify/functions/fetch"
+from = "/api/fetch/raw"
+to = "/.netlify/functions/fetch?mode=raw"
 status = 200.0
 force = false
 
@@ -42,8 +42,8 @@ force = false
 [redirects.headers]
 
 [[redirects]]
-from = "/api/fetch/raw"
-to = "/.netlify/functions/fetch/raw"
+from = "/api/fetch"
+to = "/.netlify/functions/fetch"
 status = 200.0
 force = false
 

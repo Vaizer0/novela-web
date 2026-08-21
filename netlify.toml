@@ -3,14 +3,15 @@
   publish = "dist"
   functions = "netlify/functions"
 
+# Function routes must precede the SPA catch-all (redirects shadow functions).
 [[redirects]]
-  from = "/api/fetch"
-  to = "/.netlify/functions/fetch"
+  from = "/api/fetch/raw"
+  to = "/.netlify/functions/fetch?mode=raw"
   status = 200
 
 [[redirects]]
-  from = "/api/fetch/raw"
-  to = "/.netlify/functions/fetch/raw"
+  from = "/api/fetch"
+  to = "/.netlify/functions/fetch"
   status = 200
 
 [[redirects]]
