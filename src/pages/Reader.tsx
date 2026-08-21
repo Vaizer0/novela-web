@@ -2,6 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { findEntry, getSourceRuntime, rawImg } from "../lib/sources";
 import { db } from "../db/db";
+import { applyRules, getRules } from "../lib/cleanup";
+import { LOCAL_SOURCE_ID } from "../lib/localImport";
+import { TtsPlayer } from "../components/TtsPlayer";
+import { getTranslationConfig, translateParagraphs } from "../lib/translate";
 
 interface ReaderSettings {
   fontSize: number;
@@ -32,6 +36,11 @@ export default function Reader() {
   const [error, setError] = useState("");
   const [settings, setSettings] = useState<ReaderSettings>(loadSettings);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [translateOn, setTranslateOn] = useState(false);
+  const [translated, setTranslated] = useState<string[] | null>(null);
+  const [translating, setTranslating] = useState(false);
+  const [trProgress, setTrProgress] = useState({ done: 0, total: 0 });
+  const [trConfig] = useState(() => getTranslationConfig());
   const [nav, setNav] = useState<{ prev: string | null; next: string | null; title: string }>({
     prev: null,
     next: null,
@@ -65,6 +74,12 @@ export default function Reader() {
     setPages(null);
     void (async () => {
       try {
+        // Local imports: text is pre-extracted into the chapter cache.
+        if (sourceId === LOCAL_SOURCE_ID) {
+          const local = await db.chapterCache.get(chapterUrl);
+          if (!cancelled) setText(local?.text ?? "(missing content)");
+          return;
+        }
         // Cached text first (novel mode).
         const cached = await db.chapterCache.get(chapterUrl);
         const entry = await findEntry(sourceId);
@@ -144,8 +159,34 @@ export default function Reader() {
     if (!url) return "";
     return `/reader?source=${encodeURIComponent(sourceId)}&bookUrl=${encodeURIComponent(bookUrl)}&chapterUrl=${encodeURIComponent(url)}`;
   }
-
-  const paragraphs = useMemo(() => (text ? text.split(/\n{2,}/).filter((p) => p.trim()) : []), [text]);
+  const rules = useMemo(() => getRules(bookUrl), [bookUrl]);
+  const paragraphs = useMemo(() => {
+    if (!text) return [];
+    return applyRules(text, rules)
+      .split(/\n{2,}/)
+      .filter((p) => p.trim());
+  }, [text, rules]);
+  useEffect(() => {
+    if (!translateOn || paragraphs.length === 0) {
+      setTranslated(null);
+      return;
+    }
+    let cancelled = false;
+    setTranslating(true);
+    setTranslated(null);
+    void (async () => {
+      const result = await translateParagraphs(paragraphs, trConfig, (done, total) =>
+        setTrProgress({ done, total }),
+      );
+      if (!cancelled) {
+        setTranslated(result);
+        setTranslating(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [translateOn, paragraphs, trConfig]);
 
   if (!sourceId || !chapterUrl) return <div className="page">Missing parameters.</div>;
 
@@ -221,17 +262,51 @@ export default function Reader() {
               <option value="dark">Dark</option>
             </select>
           </label>
+          <label className="inline">
+            <input
+              type="checkbox"
+              checked={translateOn}
+              onChange={(e) => setTranslateOn(e.target.checked)}
+            />
+            Translate ({trConfig.backend}, →{trConfig.toLang})
+          </label>
+          {translating && (
+            <span className="muted small">
+              Translating {trProgress.done}/{trProgress.total}…
+            </span>
+          )}
         </div>
+      )}
+
+      {paragraphs.length > 0 && (
+        <TtsPlayer
+          paragraphs={paragraphs}
+          onAdvance={() => {
+            if (nav.next) window.location.href = chapterHref(nav.next);
+          }}
+        />
       )}
 
       <div className="reader-content" style={{ fontSize: settings.fontSize, lineHeight: settings.lineHeight }}>
         <h2>{nav.title}</h2>
         {error && <p className="error">{error}</p>}
         {!error && text === null && pages === null && <p className="muted">Loading…</p>}
-        {paragraphs.length > 0 && (
+        {paragraphs.length > 0 && translated && (
+          <div className="bilingual">
+            {paragraphs.map((p, i) => (
+              <div key={i} className="bi-row">
+                <p id={`para-${i}`}>{p}</p>
+                <p>{translated[i]}</p>
+              </div>
+            ))}
+          </div>
+        )}
+        {paragraphs.length > 0 && !translated && (
           <div>
             {paragraphs.map((p, i) => (
-              <p key={i}>{p}</p>
+              <p key={i} id={`para-${i}`}>
+                {p}
+              </p>
             ))}
           </div>
         )}

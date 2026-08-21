@@ -1,8 +1,22 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { db } from "../db/db";
+import { importLocalFile } from "../lib/localImport";
 
 export default function Settings() {
   const [msg, setMsg] = useState("");
+  const navigate = useNavigate();
+
+  function importBook(file: File): void {
+    void (async () => {
+      try {
+        const bookUrl = await importLocalFile(file);
+        navigate(`/novel?source=local_epub&url=${encodeURIComponent(bookUrl)}`);
+      } catch (e) {
+        setMsg(`Import failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    })();
+  }
 
   async function exportBackup(): Promise<void> {
     const [books, chapters, progress, customPlugins, translationSettings] = await Promise.all([
@@ -62,6 +76,22 @@ export default function Settings() {
             onChange={(e) => {
               const f = e.target.files?.[0];
               if (f) importBackup(f);
+              e.target.value = "";
+            }}
+          />
+        </label>
+      </div>
+
+      <h2>Local books</h2>
+      <div className="row">
+        <label>
+          Import .epub / .fb2
+          <input
+            type="file"
+            accept=".epub,.fb2,application/epub+zip,text/xml"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) importBook(f);
               e.target.value = "";
             }}
           />

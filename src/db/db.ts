@@ -51,6 +51,12 @@ export interface ReadingProgress {
   updatedAt: number;
 }
 
+export interface TranslationCacheEntry {
+  /** backend|from|to|sha256(text) */
+  key: string;
+  text: string;
+}
+
 export const db = new Dexie("novela-web") as Dexie & {
   books: EntityTable<Book, "url">;
   chapters: Table<StoredChapter, [string, string]>;
@@ -58,6 +64,7 @@ export const db = new Dexie("novela-web") as Dexie & {
   customPlugins: EntityTable<CustomPlugin, "id">;
   translationSettings: EntityTable<TranslationSettings, "bookUrl">;
   progress: EntityTable<ReadingProgress, "bookUrl">;
+  translationCache: EntityTable<TranslationCacheEntry, "key">;
 };
 
 db.version(1).stores({
@@ -67,6 +74,10 @@ db.version(1).stores({
   customPlugins: "id",
   translationSettings: "bookUrl",
   progress: "bookUrl",
+});
+
+db.version(2).stores({
+  translationCache: "key",
 });
 
 export function bookFromResult(sourceId: string, r: BookResult): Book {

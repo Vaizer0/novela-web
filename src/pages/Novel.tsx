@@ -4,6 +4,8 @@ import { findEntry, rawImg } from "../lib/sources";
 import { getSourceRuntime } from "../engine/registry";
 import type { BookDetails } from "../engine/types";
 import { db, bookFromResult, chapterFromResult } from "../db/db";
+import { getRules, setRules, type CleanupRule } from "../lib/cleanup";
+import { exportEpub } from "../lib/epubExport";
 
 export default function Novel() {
   const [params] = useSearchParams();
@@ -15,6 +17,19 @@ export default function Novel() {
   const [inLibrary, setInLibrary] = useState(false);
   const [reversed, setReversed] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [rules, setRulesState] = useState<CleanupRule[]>([]);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [exporting, setExporting] = useState<{ done: number; total: number } | null>(null);
+  const [exportError, setExportError] = useState("");
+
+  useEffect(() => {
+    setRulesState(getRules(bookUrl));
+  }, [bookUrl]);
+
+  function updateRules(next: CleanupRule[]): void {
+    setRulesState(next);
+    setRules(bookUrl, next);
+  }
 
   useEffect(() => {
     if (!sourceId || !bookUrl) return;
@@ -57,6 +72,20 @@ export default function Novel() {
     setInLibrary(next);
   }
 
+  async function handleExport(): Promise<void> {
+    const entry = await findEntry(sourceId);
+    if (!entry) return;
+    setExportError("");
+    setExporting({ done: 0, total: 0 });
+    try {
+      await exportEpub(entry, bookUrl, (done, total) => setExporting({ done, total }));
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExporting(null);
+    }
+  }
+
   const shown = useMemo(() => (reversed ? [...chapters].reverse() : chapters), [chapters, reversed]);
 
   const readerHref = useCallback(
@@ -92,7 +121,63 @@ export default function Novel() {
             {inLibrary ? "✓ In library" : "+ Add to library"}
           </button>
         </div>
+          <button onClick={() => void handleExport()} disabled={exporting !== null}>
+            {exporting ? `Exporting ${exporting.done}/${exporting.total}…` : "Export EPUB"}
+          </button>
+          {exportError && <p className="error">{exportError}</p>}
       </div>
+
+      <div className="row">
+        <button onClick={() => setRulesOpen((v) => !v)}>
+          Cleanup rules{rules.length > 0 ? ` (${rules.length})` : ""}
+        </button>
+      </div>
+      {rulesOpen && (
+        <div className="card">
+          {rules.map((r, i) => (
+            <div key={i} className="row">
+              <input
+                type="text"
+                placeholder="find (regex)"
+                value={r.find}
+                onChange={(e) => {
+                  const next = [...rules];
+                  next[i] = { ...r, find: e.target.value };
+                  updateRules(next);
+                }}
+              />
+              <input
+                type="text"
+                placeholder="replace with"
+                value={r.replace}
+                onChange={(e) => {
+                  const next = [...rules];
+                  next[i] = { ...r, replace: e.target.value };
+                  updateRules(next);
+                }}
+              />
+              <label className="inline">
+                <input
+                  type="checkbox"
+                  checked={r.caseInsensitive}
+                  onChange={(e) => {
+                    const next = [...rules];
+                    next[i] = { ...r, caseInsensitive: e.target.checked };
+                    updateRules(next);
+                  }}
+                />
+                aA
+              </label>
+              <button onClick={() => updateRules(rules.filter((_, j) => j !== i))}>✕</button>
+            </div>
+          ))}
+          <button
+            onClick={() => updateRules([...rules, { find: "", replace: "", caseInsensitive: false }])}
+          >
+            + Add rule
+          </button>
+        </div>
+      )}
       {details.description && <p className="novel-desc">{details.description}</p>}
 
       <div className="row">
