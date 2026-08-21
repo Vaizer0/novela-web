@@ -41,6 +41,48 @@ function wordOffsets(text: string): Array<{ start: number; end: number }> {
   return out;
 }
 
+export interface TtsChunk {
+  text: string;
+  /** char offset of this chunk within its source paragraph */
+  offset: number;
+}
+
+const MAX_CHUNK = 300;
+
+/**
+ * Split text into sentence-sized chunks, keeping each chunk's char offset in
+ * the source. Mirrors NoveLA Android's slice-and-anchor strategy: short
+ * utterances bound highlight drift. Chunks longer than MAX_CHUNK are split
+ * at the nearest space so no single utterance is very long.
+ */
+export function splitChunks(text: string): Array<TtsChunk> {
+  const out: Array<TtsChunk> = [];
+  const re = /[^.!?\n]+[.!?]*\s*/g;
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+    let index = m.index;
+    let piece = m[0];
+    while (piece.length > MAX_CHUNK) {
+      let cut = piece.lastIndexOf(" ", MAX_CHUNK);
+      if (cut <= 0) cut = MAX_CHUNK;
+      out.push({ text: piece.slice(0, cut), offset: index });
+      index += cut;
+      piece = piece.slice(cut);
+    }
+    if (piece.length > 0) out.push({ text: piece, offset: index });
+  }
+  return out;
+}
+
+/**
+ * EMA-blend the measured ms-per-word of a finished utterance into the running
+ * pace estimate. Degenerate samples (too short, no words) are ignored.
+ */
+export function calibratePace(prevMsPerWord: number, elapsedMs: number, wordCount: number): number {
+  if (elapsedMs < 500 || wordCount === 0) return prevMsPerWord;
+  const actual = elapsedMs / Math.max(wordCount, 1);
+  return prevMsPerWord * 0.6 + actual * 0.4;
+}
+
 /**
  * Web Speech API mini-player. Speaks paragraphs in order with word-level
  * highlighting and continuous auto-scroll, then stops (or advances chapter).
@@ -57,6 +99,8 @@ export function TtsPlayer({ paragraphs, speakTexts, lang, onWord, onAdvance }: T
   const rateRef = useRef(rate);
   const textsRef = useRef(speakTexts);
   textsRef.current = speakTexts;
+  // self-calibrating ms-per-word estimate (~165 wpm at rate 1)
+  const paceRef = useRef(60000 / 165);
 
   useEffect(() => {
     return () => {
@@ -76,50 +120,74 @@ export function TtsPlayer({ paragraphs, speakTexts, lang, onWord, onAdvance }: T
     setPlaying(false);
     setCurrent(-1);
     onWord?.(null);
-  }
 
-  function speakFrom(startIdx: number, atRate?: number): void {
+  }
+  function speakFrom(startPara: number, atRate?: number): void {
     window.speechSynthesis.cancel();
     stoppedRef.current = false;
     setPlaying(true);
 
-    const speakNext = (i: number): void => {
-      if (stoppedRef.current || i >= textsRef.current.length) {
+    const r = atRate ?? rateRef.current;
+    // Sentence-chunked queue (NoveLA-style slicing): short utterances bound
+    // highlight drift, and per-chunk onend samples recalibrate the pace.
+    const queue = textsRef.current.flatMap((t, para) =>
+      splitChunks(t).map((c) => ({ para, ...c })),
+    );
+    let first = queue.findIndex((c) => c.para >= startPara);
+    if (first < 0) first = queue.length;
+
+    const speakNext = (qi: number): void => {
+      if (stoppedRef.current || qi >= queue.length) {
         setPlaying(false);
         setCurrent(-1);
         onWord?.(null);
-        if (!stoppedRef.current && i >= textsRef.current.length) onAdvance?.();
+        if (!stoppedRef.current && qi >= queue.length) onAdvance?.();
         return;
       }
-      setCurrent(i);
-      // activate the paragraph immediately; start:-1 = "no word mark yet"
-      onWord?.({ para: i, start: -1, end: -1 });
-      const text = textsRef.current[i];
-      document.getElementById(`para-${i}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      const chunk = queue[qi];
+      const prev = qi > 0 ? queue[qi - 1] : null;
+      const paraChanged = !prev || prev.para !== chunk.para;
+      if (paraChanged) {
+        setCurrent(chunk.para);
+        // activate the paragraph immediately; start:-1 = "no word mark yet"
+        onWord?.({ para: chunk.para, start: -1, end: -1 });
+        document
+          .getElementById(`para-${chunk.para}`)
+          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
 
       // Word highlight: many engines (notably Android Chrome) never fire
       // boundary events, so drive highlighting from a timing estimate and
-      // switch to precise events when the engine does send them.
-      const words = wordOffsets(text);
+      // switch to precise events when the engine does send them. Chunk-local
+      // offsets map back into paragraph coordinates for Reader's highlight().
+      const words = wordOffsets(chunk.text);
       let wi = 0;
       let boundarySeen = false;
       if (wordTimerRef.current !== null) window.clearInterval(wordTimerRef.current);
-      const msPerWord = 60000 / (165 * (atRate ?? rateRef.current)); // ~165 wpm at 1×
+      const t0 = performance.now();
       wordTimerRef.current = window.setInterval(() => {
+        // don't run ahead while the engine is paused
+        if (window.speechSynthesis.paused) return;
         if (stoppedRef.current || boundarySeen) {
           if (wordTimerRef.current !== null) window.clearInterval(wordTimerRef.current);
           wordTimerRef.current = null;
           return;
         }
         if (wi < words.length) {
-          onWord?.({ para: i, ...words[wi] });
-          document.getElementById(`para-${i}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+          onWord?.({
+            para: chunk.para,
+            start: words[wi].start + chunk.offset,
+            end: words[wi].end + chunk.offset,
+          });
+          document
+            .getElementById(`para-${chunk.para}`)
+            ?.scrollIntoView({ behavior: "smooth", block: "center" });
           wi++;
         }
-      }, msPerWord);
+      }, paceRef.current / r);
 
-      const u = new SpeechSynthesisUtterance(text);
-      u.rate = atRate ?? rateRef.current;
+      const u = new SpeechSynthesisUtterance(chunk.text);
+      u.rate = r;
       u.lang = lang;
       const voice = pickVoice(lang);
       if (voice) u.voice = voice;
@@ -132,13 +200,15 @@ export function TtsPlayer({ paragraphs, speakTexts, lang, onWord, onAdvance }: T
           wordTimerRef.current = null;
         }
         let start = ev.charIndex;
-        if (start > 0 && !/\s/.test(text[start - 1])) {
-          while (start > 0 && !/\s/.test(text[start - 1])) start--;
+        if (start > 0 && !/\s/.test(chunk.text[start - 1])) {
+          while (start > 0 && !/\s/.test(chunk.text[start - 1])) start--;
         }
         let end = start;
-        while (end < text.length && !/\s/.test(text[end])) end++;
-        onWord?.({ para: i, start, end });
-        document.getElementById(`para-${i}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+        while (end < chunk.text.length && !/\s/.test(chunk.text[end])) end++;
+        onWord?.({ para: chunk.para, start: start + chunk.offset, end: end + chunk.offset });
+        document
+          .getElementById(`para-${chunk.para}`)
+          ?.scrollIntoView({ behavior: "smooth", block: "center" });
       };
       u.onend = () => {
         if (wordTimerRef.current !== null) {
@@ -146,8 +216,10 @@ export function TtsPlayer({ paragraphs, speakTexts, lang, onWord, onAdvance }: T
           wordTimerRef.current = null;
         }
         if (stoppedRef.current) return;
-        onWord?.(null);
-        speakNext(i + 1);
+        paceRef.current = calibratePace(paceRef.current, performance.now() - t0, words.length);
+        const next = queue[qi + 1];
+        if (!next || next.para !== chunk.para) onWord?.(null);
+        speakNext(qi + 1);
       };
       u.onerror = () => {
         if (wordTimerRef.current !== null) {
@@ -160,7 +232,7 @@ export function TtsPlayer({ paragraphs, speakTexts, lang, onWord, onAdvance }: T
       };
       window.speechSynthesis.speak(u);
     };
-    speakNext(startIdx);
+    speakNext(first);
   }
 
   function pauseOrResume(): void {
