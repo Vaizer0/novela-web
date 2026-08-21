@@ -1,5 +1,6 @@
 import JSZip from "jszip";
 import type { SourceEntry } from "../engine/registry";
+import type { LuaSource } from "../engine/sourceAdapter";
 import { getSourceRuntime } from "../engine/registry";
 import { db } from "../db/db";
 
@@ -38,12 +39,14 @@ async function fetchBinary(url: string): Promise<ArrayBuffer | null> {
  * the Dexie cache when present, otherwise they are fetched through the
  * source's adapter (and cached).
  */
-export async function exportEpub(
+export async function buildEpubZip(
   entry: SourceEntry,
   bookUrl: string,
   onProgress?: (done: number, total: number) => void,
-): Promise<void> {
-  const src = await getSourceRuntime(entry);
+  /** test hook: use this adapter instead of the registry runtime */
+  srcOverride?: LuaSource,
+): Promise<JSZip> {
+  const src = srcOverride ?? (await getSourceRuntime(entry));
   const details = await src.bookDetails(bookUrl);
   const chapters = await src.chapters(bookUrl);
 
@@ -148,12 +151,21 @@ ${items.map((it) => `<itemref idref="${it.id}"/>`).join("\n")}
 <nav epub:type="toc"><h1>Contents</h1><ol>
 ${items.map((it) => `<li><a href="${it.href}">${esc(it.title)}</a></li>`).join("\n")}
 </ol></nav>
-</body>
 </html>`,
   );
 
+  return zip;
+}
+
+/** Build the EPUB and trigger a browser download. */
+export async function exportEpub(
+  entry: SourceEntry,
+  bookUrl: string,
+  onProgress?: (done: number, total: number) => void,
+): Promise<void> {
+  const zip = await buildEpubZip(entry, bookUrl, onProgress);
   const blob = await zip.generateAsync({ type: "blob", mimeType: "application/epub+zip" });
-  const safeTitle = details.title.replace(/[^\w\s-]/g, "").trim() || "book";
+  const safeTitle = (entry.name || "book").replace(/[^\w\s-]/g, "").trim() || "book";
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = `${safeTitle}.epub`;
