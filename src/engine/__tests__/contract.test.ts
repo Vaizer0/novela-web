@@ -147,9 +147,7 @@ describe("freewebnovel contract", () => {
       rating: "3.8",
       contentType: "",
     });
-    // protocol-relative href resolved
     expect(page.items[1].url).toBe("https://freewebnovel.com/book/two/");
-    // empty rating → null
     expect(page.items[1].rating).toBeNull();
   });
 
@@ -195,7 +193,6 @@ describe("piaotia (GBK) contract", () => {
     await src.catalogSearch(0, "搜索");
     const searchCall = calls.find((c) => c.url.includes("searchkey="));
     expect(searchCall).toBeDefined();
-    // GBK bytes for 搜索: CB D1 CB F7 → %CB%D1+%CB%F7 with '+' for space handling
     expect(searchCall!.url).toContain("searchkey=%CB%D1%CB%F7");
     expect(searchCall!.charset?.toUpperCase()).toBe("GBK");
   });
@@ -207,7 +204,6 @@ describe("piaotia (GBK) contract", () => {
     expect(page.items.length).toBe(2);
     expect(page.items[0].title).toBe("斗破苍穹");
     expect(page.items[0].url).toBe("https://www.piaotia.com/bookinfo/1/2345/");
-    // cover built from /FOLDERID/BOOKID/ pattern
     expect(page.items[0].cover).toBe("https://www.piaotia.com/files/article/image/1/2345/2345s.jpg");
     expect(page.items[1].cover).toBe("https://www.piaotia.com/files/article/image/2/3456/3456s.jpg");
   });
@@ -225,9 +221,8 @@ describe("asurascans (manga) contract", () => {
   it("chapter list dedups, renames First Chapter, sorts by number", async () => {
     const { fetcher } = makeFetcher();
     const src = await LuaSource.load(loadPlugin("asurascans.lua"), "asurascans.lua", fetcher);
-    // Plugin doesn't declare content_type (Android readContentType → ""); manga
-    // mode is detected via getPageList presence.
-    expect(src.meta.contentType).toBe("");
+    // The bundled Asura Scans extension explicitly declares manga content.
+    expect(src.meta.contentType).toBe("manga");
     expect(src.hasGetPageList).toBe(true);
 
     const chapters = await src.chapters("https://asurascans.com/series/dungeon-reset/");
@@ -239,7 +234,6 @@ describe("asurascans (manga) contract", () => {
     const { fetcher } = makeFetcher();
     const src = await LuaSource.load(loadPlugin("asurascans.lua"), "asurascans.lua", fetcher);
     const pages = await src.pageList(ASURA_CHAPTER_PAGE, "https://asurascans.com/dungeon-reset/chapter-206/");
-    // Plugin flattens astro props to plain CDN URL strings in page order.
     expect(pages).toEqual([
       "https://img.asura/page-01.webp",
       "https://img.asura/page-02.webp",
