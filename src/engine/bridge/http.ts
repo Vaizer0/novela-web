@@ -4,8 +4,9 @@ import { fetchViaBypass, getBypassProxyUrl, isCfBlocked } from "../../lib/bypass
 
 /**
  * HTTP bridge: http_get / http_post / http_get_batch.
- * All traffic goes through the /api/fetch proxy function; response envelope
- * {success, body, code, headers} matches the Android LuaEngine contract.
+ * All traffic prefers the configured server-side proxy; browser-safe direct
+ * fallbacks keep GET-based Lua sources usable from GitHub Pages when the
+ * serverless proxy is unavailable.
  */
 
 export interface FetchEnvelope {
@@ -27,11 +28,99 @@ export type PageFetcher = (url: string, init: {
   body?: string;
   charset?: string;
 }) => Promise<FetchEnvelope>;
+
+const DIRECT_TIMEOUT_MS = 45_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchDirect(url: string, init: { method?: string; headers?: Record<string, string>; body?: string; charset?: string }): Promise<FetchEnvelope> {
+  const method = (init.method ?? "GET").toUpperCase();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DIRECT_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: init.headers,
+      body: method !== "GET" && method !== "HEAD" ? init.body : undefined,
+      redirect: "follow",
+      signal: controller.signal,
+    });
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    let body: string;
+    try {
+      const charset = init.charset && init.charset.toLowerCase() !== "utf-8" ? init.charset : "utf-8";
+      body = new TextDecoder(charset, { fatal: false }).decode(bytes);
+    } catch {
+      body = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+    }
+    const headers: Record<string, string[]> = {};
+    res.headers.forEach((value, key) => {
+      (headers[key.toLowerCase()] ??= []).push(value);
+    });
+    return { success: res.ok, body, code: res.status, headers };
+  } catch (e) {
+    return {
+      success: false,
+      body: "",
+      code: -1,
+      headers: {},
+      error: e instanceof Error ? e.message : String(e),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
- * Default fetcher: POST to the Netlify function. When the response looks like
- * a Cloudflare challenge, retry automatically through Jina Reader (headless
- * browser service, passes most challenges, no setup needed), then through a
- * user-configured FlareSolverr instance if one is set.
+ * Direct Jina Reader fallback. Reader can fetch publicly accessible URLs and
+ * can return raw HTML, which is useful for Lua selectors and Cloudflare-heavy
+ * sites when the app's own proxy is unreachable.
+ */
+async function fetchDirectJina(url: string, sourceInit: { headers?: Record<string, string> }): Promise<FetchEnvelope> {
+  const jinaUrl = `https://r.jina.ai/${url}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DIRECT_TIMEOUT_MS);
+  try {
+    const headers: Record<string, string> = {
+      Accept: "text/html, text/plain;q=0.9, */*;q=0.8",
+      "x-respond-with": "html",
+      ...(sourceInit.headers ?? {}),
+    };
+    const res = await fetch(jinaUrl, { headers, redirect: "follow", signal: controller.signal });
+    const body = await res.text();
+    const outHeaders: Record<string, string[]> = {};
+    res.headers.forEach((value, key) => {
+      (outHeaders[key.toLowerCase()] ??= []).push(value);
+    });
+    return {
+      success: res.ok && body.trim() !== "",
+      body,
+      code: res.status,
+      headers: outHeaders,
+      ...(res.ok ? {} : { error: `Jina Reader HTTP ${res.status}` }),
+    };
+  } catch (e) {
+    return {
+      success: false,
+      body: "",
+      code: -1,
+      headers: {},
+      error: e instanceof Error ? e.message : String(e),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Default fetcher:
+ *  1. server-side proxy (best compatibility, including POST/encoded pages)
+ *  2. direct browser GET (works when the target permits CORS)
+ *  3. direct Jina Reader GET (works without target CORS and can bypass many blocks)
+ *  4. server-side Jina Reader through the proxy
+ *  5. optional user-hosted FlareSolverr
  */
 export const defaultFetcher: PageFetcher = async (url, init) => {
   let env: FetchEnvelope;
@@ -43,30 +132,53 @@ export const defaultFetcher: PageFetcher = async (url, init) => {
     });
     env = (await res.json()) as FetchEnvelope;
   } catch {
-    // primary unreachable — fall through to Jina below
-    env = { success: false, body: "", code: -1, headers: {}, error: "unreachable" };
+    env = { success: false, body: "", code: -1, headers: {}, error: "proxy unreachable" };
   }
   if (!isCfBlocked(env) && env.success) return env;
 
-  // Automatic fallback: Jina Reader renders the page in a real browser.
-  const jina = await viaFunction(`https://r.jina.ai/${url}`, {
+  const method = (init.method ?? "GET").toUpperCase();
+
+  // Browser direct GET is the closest equivalent to the original request and
+  // preserves the page's native HTML/charset when the site exposes CORS.
+  if (method === "GET" && !isCfBlocked(env)) {
+    const direct = await fetchDirect(url, init);
+    if (!isCfBlocked(direct) && direct.success) return direct;
+  }
+
+  // Jina Reader is GET-only here: do not silently change POST semantics.
+  if (method === "GET") {
+    const jinaDirect = await fetchDirectJina(url, init);
+    if (!isCfBlocked(jinaDirect) && jinaDirect.success) return jinaDirect;
+  }
+
+  // Last attempt through the server-side proxy, useful when the first result
+  // was a Cloudflare page but Netlify itself is still available.
+  const jinaProxy = await viaFunction(`https://r.jina.ai/${url}`, {
     headers: { "x-return-format": "html", "x-respond-with": "html" },
   });
-  if (!isCfBlocked(jina)) return jina;
+  if (!isCfBlocked(jinaProxy) && jinaProxy.success) return jinaProxy;
 
-  // Optional manual fallback: user-hosted FlareSolverr.
   const bypass = getBypassProxyUrl();
   if (bypass !== "") {
     const retried = await fetchViaBypass(bypass, url);
-    if (!isCfBlocked(retried)) return retried;
+    if (!isCfBlocked(retried) && retried.success) return retried;
   }
 
+  const detail = [env.error, jinaDirectOrProxyError(env, jinaProxy)].filter(Boolean).join("; ");
   return {
     ...env,
     success: false,
-    error: "Cloudflare-blocked source — all fetch strategies failed",
+    error: isCfBlocked(env)
+      ? `Cloudflare-blocked source — all fetch strategies failed${detail ? `: ${detail}` : ""}`
+      : `Source fetch failed${detail ? `: ${detail}` : ""}`,
   };
 };
+
+function jinaDirectOrProxyError(primary: FetchEnvelope, proxy: FetchEnvelope): string {
+  if (proxy.error) return proxy.error;
+  if (primary.error) return primary.error;
+  return "fallbacks unavailable";
+}
 
 /** GET through the Netlify function with custom headers. */
 async function viaFunction(url: string, init?: RequestInit): Promise<FetchEnvelope> {
@@ -147,7 +259,7 @@ async function request(
     if (cookieHeader !== "") headers["Cookie"] = cookieHeader;
   }
 
-  const cacheKey = `${url}|${charset}|${sourceId}|${hashString(JSON.stringify(headers))}`;
+  const cacheKey = `${url}|${charset}|${sourceId}|${method}|${body ?? ""}|${hashString(JSON.stringify(headers))}`;
   const hit = cache.get(cacheKey);
   if (hit && Date.now() - hit.storedAt < CACHE_TTL_MS) return hit.env;
 
