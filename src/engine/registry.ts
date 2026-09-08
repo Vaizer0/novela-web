@@ -47,6 +47,7 @@ export function metaFromCode(code: string, fileName: string): SourceMeta {
 }
 
 const ENABLED_KEY = "enabledSources";
+const CUSTOM_IMPORT_MIGRATION_KEY = "customLuaSourcesEnabledV1";
 
 /** null = everything enabled (fresh install default). */
 export function getEnabledSources(): Set<string> | null {
@@ -101,6 +102,19 @@ export async function listSources(): Promise<SourceEntry[]> {
   const byId = new Map<string, SourceEntry>();
   for (const entry of bundled) byId.set(entry.id, entry);
   for (const entry of custom) byId.set(entry.id, entry);
+
+  // Older builds could import custom Lua files while leaving them absent from
+  // an existing explicit enabled-source set. Perform a one-time migration so
+  // those already-imported sources become visible in Browse after upgrading.
+  if (localStorage.getItem(CUSTOM_IMPORT_MIGRATION_KEY) !== "1") {
+    const enabled = getEnabledSources();
+    if (enabled !== null && custom.length > 0) {
+      for (const entry of custom) enabled.add(entry.id);
+      setEnabledSources(enabled);
+    }
+    localStorage.setItem(CUSTOM_IMPORT_MIGRATION_KEY, "1");
+  }
+
   return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
