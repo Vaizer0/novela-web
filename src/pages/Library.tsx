@@ -4,9 +4,11 @@ import { db } from "../db/db";
 import { rawImg } from "../lib/sources";
 import type { Book } from "../db/db";
 
+type Progress = { chapterUrl: string; position: number; updatedAt: number };
+
 export default function Library() {
   const [books, setBooks] = useState<Book[] | null>(null);
-  const [progress, setProgress] = useState<Map<string, { chapterUrl: string; position: number }>>(new Map());
+  const [progress, setProgress] = useState<Map<string, Progress>>(new Map());
 
   useEffect(() => {
     void (async () => {
