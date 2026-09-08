@@ -40,6 +40,7 @@ function defaultFilterState(filters: LuaFilter[]): ActiveFilters {
 
 export default function Browse() {
   const [sources, setSources] = useState<SourceEntry[] | null>(null);
+  const [startupError, setStartupError] = useState("");
   const [activeId, setActiveId] = useState<string>("");
   const [items, setItems] = useState<BookResult[]>([]);
   const [hasNext, setHasNext] = useState(false);
@@ -55,13 +56,34 @@ export default function Browse() {
   const sentinel = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    void getEnabledEntries().then((list) => {
-      setSources(list);
-      if (list.length > 0) setActiveId(list[0].id);
-    });
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      if (!cancelled) setStartupError("Source registry is taking too long to start. Reload the page once.");
+    }, 8_000);
+
+    void getEnabledEntries()
+      .then((list) => {
+        if (cancelled) return;
+        window.clearTimeout(timer);
+        setSources(list);
+        if (list.length > 0) setActiveId(list[0].id);
+        else setStartupError("No bundled sources were loaded. Check the deployment build.");
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        window.clearTimeout(timer);
+        setStartupError(e instanceof Error ? e.message : String(e));
+        setSources([]);
+      });
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, []);
 
-  // Load filter schema when the active source changes.
+  // Load filter schema when the active source changes. This runs independently
+  // of the initial Browse render so a slow/broken source cannot block the page.
   useEffect(() => {
     if (!activeId) return;
     const entry = sources?.find((s) => s.id === activeId);
@@ -161,14 +183,25 @@ export default function Browse() {
     setMode({ kind: "filtered", filters: filterState });
   }
 
-  if (!sources) return <p className="page">Loading…</p>;
+  if (sources === null) {
+    return (
+      <div className="page">
+        <h1>Browse</h1>
+        {startupError ? (
+          <p className="error">{startupError}</p>
+        ) : (
+          <p className="muted">Loading sources…</p>
+        )}
+      </div>
+    );
+  }
+
   if (sources.length === 0)
     return (
       <div className="page">
         <h1>Browse</h1>
-        <p className="muted">
-          No enabled sources. Enable some on the <a href="/extensions">Extensions</a> page.
-        </p>
+        <p className="error">{startupError || "No sources are available."}</p>
+        <p className="muted">Try reloading the page. Bundled sources should be available without importing a ZIP.</p>
       </div>
     );
 
@@ -212,7 +245,6 @@ export default function Browse() {
         )}
       </form>
 
-      {/* Source list */}
       <div
         className="source-strip"
         style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8, padding: "12px 0 18px", overflow: "visible" }}
@@ -242,7 +274,6 @@ export default function Browse() {
         ))}
       </div>
 
-      {/* Filter panel */}
       {panelOpen && activeEntry && (
         <div className="card">
           {filters.map((f) => {
@@ -253,19 +284,10 @@ export default function Browse() {
                     {f.label}
                     <select
                       value={filterState.selectValues?.[f.key] ?? ""}
-                      onChange={(e) =>
-                        setFilterState((st) => ({
-                          ...st,
-                          selectValues: { ...st.selectValues, [f.key]: e.target.value },
-                        }))
-                      }
+                      onChange={(e) => setFilterState((st) => ({ ...st, selectValues: { ...st.selectValues, [f.key]: e.target.value } }))}
                     >
                       <option value="">—</option>
-                      {f.options.map((o) => (
-                        <option key={o.value} value={o.value}>
-                          {o.label}
-                        </option>
-                      ))}
+                      {f.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                     </select>
                   </label>
                 );
@@ -278,21 +300,7 @@ export default function Browse() {
                       const checked = cur.includes(o.value);
                       return (
                         <label key={o.value} className="inline">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() =>
-                              setFilterState((st) => {
-                                const next = checked
-                                  ? cur.filter((v) => v !== o.value)
-                                  : [...cur, o.value];
-                                return {
-                                  ...st,
-                                  checkboxIncluded: { ...st.checkboxIncluded, [f.key]: next },
-                                };
-                              })
-                            }
-                          />
+                          <input type="checkbox" checked={checked} onChange={() => setFilterState((st) => ({ ...st, checkboxIncluded: { ...st.checkboxIncluded, [f.key]: checked ? cur.filter((v) => v !== o.value) : [...cur, o.value] } }))} />
                           {o.label}
                         </label>
                       );
@@ -307,22 +315,13 @@ export default function Browse() {
                       const inc = filterState.triIncluded?.[f.key] ?? [];
                       const exc = filterState.triExcluded?.[f.key] ?? [];
                       const state = inc.includes(o.value) ? 1 : exc.includes(o.value) ? -1 : 0;
-                      const cycle = () =>
-                        setFilterState((st) => {
+                      return (
+                        <button key={o.value} type="button" className="tri" onClick={() => setFilterState((st) => {
                           const nextInc = (st.triIncluded?.[f.key] ?? []).filter((v) => v !== o.value);
                           const nextExc = (st.triExcluded?.[f.key] ?? []).filter((v) => v !== o.value);
-                          if (state === 0) nextInc.push(o.value);
-                          else if (state === 1) nextExc.push(o.value);
-                          return {
-                            ...st,
-                            triIncluded: { ...st.triIncluded, [f.key]: nextInc },
-                            triExcluded: { ...st.triExcluded, [f.key]: nextExc },
-                          };
-                        });
-                      return (
-                        <button key={o.value} type="button" className="tri" onClick={cycle}>
-                          {state === 0 ? "○" : state === 1 ? "✓" : "✗"} {o.label}
-                        </button>
+                          if (state === 0) nextInc.push(o.value); else if (state === 1) nextExc.push(o.value);
+                          return { ...st, triIncluded: { ...st.triIncluded, [f.key]: nextInc }, triExcluded: { ...st.triExcluded, [f.key]: nextExc } };
+                        })}>{state === 0 ? "○" : state === 1 ? "✓" : "✗"} {o.label}</button>
                       );
                     })}
                   </fieldset>
@@ -331,83 +330,33 @@ export default function Browse() {
                 return (
                   <label key={f.key} className="filter-row">
                     {f.label}
-                    <input
-                      type="checkbox"
-                      checked={filterState.switchValues?.[f.key] ?? false}
-                      onChange={(e) =>
-                        setFilterState((st) => ({
-                          ...st,
-                          switchValues: { ...st.switchValues, [f.key]: e.target.checked },
-                        }))
-                      }
-                    />
+                    <input type="checkbox" checked={filterState.switchValues?.[f.key] ?? false} onChange={(e) => setFilterState((st) => ({ ...st, switchValues: { ...st.switchValues, [f.key]: e.target.checked } }))} />
                   </label>
                 );
               case "text":
                 return (
                   <label key={f.key} className="filter-row">
                     {f.label}
-                    <input
-                      type="text"
-                      value={filterState.textValues?.[f.key] ?? ""}
-                      onChange={(e) =>
-                        setFilterState((st) => ({
-                          ...st,
-                          textValues: { ...st.textValues, [f.key]: e.target.value },
-                        }))
-                      }
-                    />
+                    <input type="text" value={filterState.textValues?.[f.key] ?? ""} onChange={(e) => setFilterState((st) => ({ ...st, textValues: { ...st.textValues, [f.key]: e.target.value } }))} />
                   </label>
                 );
               case "sort":
                 return (
                   <label key={f.key} className="filter-row">
                     {f.label}
-                    <select
-                      value={filterState.sortValues?.[f.key] ?? ""}
-                      onChange={(e) =>
-                        setFilterState((st) => ({
-                          ...st,
-                          sortValues: { ...st.sortValues, [f.key]: e.target.value },
-                        }))
-                      }
-                    >
+                    <select value={filterState.sortValues?.[f.key] ?? ""} onChange={(e) => setFilterState((st) => ({ ...st, sortValues: { ...st.sortValues, [f.key]: e.target.value } }))}>
                       <option value="">—</option>
-                      {f.options.map((o) => (
-                        <option key={o.value} value={o.value}>
-                          {o.label}
-                        </option>
-                      ))}
+                      {f.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                     </select>
-                    <input
-                      type="checkbox"
-                      checked={filterState.sortAscending?.[f.key] ?? true}
-                      onChange={(e) =>
-                        setFilterState((st) => ({
-                          ...st,
-                          sortAscending: { ...st.sortAscending, [f.key]: e.target.checked },
-                        }))
-                      }
-                    />
+                    <input type="checkbox" checked={filterState.sortAscending?.[f.key] ?? true} onChange={(e) => setFilterState((st) => ({ ...st, sortAscending: { ...st.sortAscending, [f.key]: e.target.checked } }))} />
                     asc
                   </label>
                 );
             }
           })}
           <div className="row">
-            <button type="button" onClick={applyFilters}>
-              Apply
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setFilterState(defaultFilterState(filters));
-                setMode({ kind: "catalog" });
-                setPanelOpen(false);
-              }}
-            >
-              Reset
-            </button>
+            <button type="button" onClick={applyFilters}>Apply</button>
+            <button type="button" onClick={() => { setFilterState(defaultFilterState(filters)); setMode({ kind: "catalog" }); setPanelOpen(false); }}>Reset</button>
           </div>
         </div>
       )}
@@ -415,13 +364,7 @@ export default function Browse() {
       {error && (
         <p className="error">
           {error}
-          {/cloudflare-blocked/i.test(error) && (
-            <span className="muted small">
-              {" "}
-              This site blocks server-side fetchers. Run a FlareSolverr proxy and
-              add its URL in Settings → Cloudflare bypass.
-            </span>
-          )}
+          {/cloudflare-blocked/i.test(error) && <span className="muted small"> This site blocks server-side fetchers. Configure a FlareSolverr proxy in Settings for protected sources.</span>}
         </p>
       )}
       {activeEntry && <p className="muted small">Source: {activeEntry.name}</p>}
@@ -430,12 +373,7 @@ export default function Browse() {
         <div>
           {searchGroups.map((g) => (
             <section key={g.source.id}>
-              <h2>
-                {g.source.name}{" "}
-                <span className="muted small">
-                  {g.error ? `error: ${g.error}` : `${g.items.length} results`}
-                </span>
-              </h2>
+              <h2>{g.source.name} <span className="muted small">{g.error ? `error: ${g.error}` : `${g.items.length} results`}</span></h2>
               <BookGrid items={g.items} sourceId={g.source.id} />
             </section>
           ))}
