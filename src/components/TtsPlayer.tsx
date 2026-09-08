@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 export interface TtsWordPos {
   para: number;
+  /** Exact character range supplied by the speech engine within the spoken paragraph. */
   start: number;
   end: number;
 }
@@ -19,51 +20,51 @@ function pickVoice(lang: string): SpeechSynthesisVoice | null {
   if (!voices.length) return null;
   const requested = (lang || navigator.language || "en-US").toLowerCase();
   const base = requested.split("-")[0];
-  return voices.find((v) => v.lang.toLowerCase() === requested) ?? voices.find((v) => v.lang.toLowerCase().startsWith(base)) ?? null;
+  return voices.find((v) => v.lang.toLowerCase() === requested) ??
+    voices.find((v) => v.lang.toLowerCase().startsWith(base)) ??
+    null;
 }
 
-export function wordOffsets(text: string): Array<{ start: number; end: number }> {
-  const out: Array<{ start: number; end: number }> = [];
-  const re = /\S+/g;
-  for (let m = re.exec(text); m; m = re.exec(text)) out.push({ start: m.index, end: m.index + m[0].length });
-  return out;
+export interface TtsChunk {
+  text: string;
+  offset: number;
 }
 
-export function boundaryToWordIndex(text: string, charIndex: number): number {
-  const words = wordOffsets(text);
-  if (!words.length) return -1;
-  let i = words.findIndex((w) => charIndex >= w.start && charIndex < w.end);
-  if (i >= 0) return i;
-  if (charIndex < words[0].start) return 0;
-  for (let n = 0; n < words.length - 1; n++) if (charIndex >= words[n].end && charIndex < words[n + 1].start) return n + 1;
-  return words.length - 1;
-}
-
-export interface TtsChunk { text: string; offset: number }
 const MAX_CHUNK = 300;
 
+/**
+ * Keep utterances reasonably small while preserving the exact character offset
+ * back to the source paragraph. Highlighting never estimates a word range.
+ */
 export function splitChunks(text: string): TtsChunk[] {
+  if (!text) return [];
   const out: TtsChunk[] = [];
-  const re = /[^.!?\n]+[.!?]*\s*/g;
-  for (let m = re.exec(text); m; m = re.exec(text)) {
-    let offset = m.index;
-    let piece = m[0];
-    while (piece.length > MAX_CHUNK) {
-      let cut = piece.lastIndexOf(" ", MAX_CHUNK);
-      if (cut <= 0) cut = MAX_CHUNK;
-      out.push({ text: piece.slice(0, cut), offset });
-      offset += cut;
-      piece = piece.slice(cut);
+  let offset = 0;
+
+  while (offset < text.length) {
+    const remaining = text.slice(offset);
+    if (remaining.length <= MAX_CHUNK) {
+      out.push({ text: remaining, offset });
+      break;
     }
-    if (piece) out.push({ text: piece, offset });
+    let cut = remaining.lastIndexOf(" ", MAX_CHUNK);
+    if (cut <= 0) cut = MAX_CHUNK;
+    out.push({ text: remaining.slice(0, cut), offset });
+    offset += cut;
   }
   return out;
 }
 
-export function calibratePace(prevMsPerWord: number, elapsedMs: number, wordCount: number): number {
-  if (elapsedMs < 500 || wordCount === 0) return prevMsPerWord;
-  const actual = elapsedMs / wordCount;
-  return prevMsPerWord * 0.65 + actual * 0.35;
+/**
+ * Return the exact character range supplied by the speech engine.
+ * No whitespace parsing, WPM calculation, elapsed-time estimation, or
+ * inferred end position is used for highlighting.
+ */
+export function exactBoundaryRange(event: SpeechSynthesisEvent): { start: number; end: number } | null {
+  const start = Number(event.charIndex);
+  const length = Number(event.charLength);
+  if (!Number.isFinite(start) || !Number.isFinite(length) || start < 0 || length <= 0) return null;
+  return { start, end: start + length };
 }
 
 export function TtsPlayer({ paragraphs, speakTexts, lang, onWord, onAdvance }: TtsPlayerProps) {
@@ -72,11 +73,9 @@ export function TtsPlayer({ paragraphs, speakTexts, lang, onWord, onAdvance }: T
   const [current, setCurrent] = useState(-1);
   const stoppedRef = useRef(true);
   const runIdRef = useRef(0);
-  const timerRef = useRef<number | null>(null);
   const rateRef = useRef(rate);
   const textsRef = useRef(speakTexts);
   const onWordRef = useRef(onWord);
-  const paceRef = useRef(60000 / 165);
 
   rateRef.current = rate;
   textsRef.current = speakTexts;
@@ -86,22 +85,13 @@ export function TtsPlayer({ paragraphs, speakTexts, lang, onWord, onAdvance }: T
     stoppedRef.current = true;
     runIdRef.current++;
     window.speechSynthesis.cancel();
-    if (timerRef.current !== null) window.clearInterval(timerRef.current);
     onWordRef.current?.(null);
   }, []);
-
-  function clearTimer(): void {
-    if (timerRef.current !== null) {
-      window.clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-  }
 
   function stop(): void {
     stoppedRef.current = true;
     runIdRef.current++;
     window.speechSynthesis.cancel();
-    clearTimer();
     setPlaying(false);
     setCurrent(-1);
     onWordRef.current?.(null);
@@ -111,11 +101,12 @@ export function TtsPlayer({ paragraphs, speakTexts, lang, onWord, onAdvance }: T
     const runId = ++runIdRef.current;
     stoppedRef.current = false;
     window.speechSynthesis.cancel();
-    clearTimer();
     setPlaying(true);
 
-    const queue = textsRef.current.flatMap((text, para) => splitChunks(text).map((chunk) => ({ para, ...chunk })));
-    let qi = queue.findIndex((item) => item.para >= startPara);
+    const queue = textsRef.current.flatMap((text, para) =>
+      splitChunks(text).map((chunk) => ({ para, ...chunk })),
+    );
+    const qi = queue.findIndex((item) => item.para >= startPara);
     if (qi < 0) {
       setPlaying(false);
       return;
@@ -132,42 +123,11 @@ export function TtsPlayer({ paragraphs, speakTexts, lang, onWord, onAdvance }: T
       }
 
       const chunk = queue[index];
-      const words = wordOffsets(chunk.text);
-      const startedAt = performance.now();
-      let lastWordIndex = -1;
-      let lastSyncTime = startedAt;
-      let lastBoundary = false;
+      const previous = queue[index - 1];
       setCurrent(chunk.para);
-      onWordRef.current?.({ para: chunk.para, start: -1, end: -1 });
-
-      if (index === 0 || queue[index - 1].para !== chunk.para) {
+      if (!previous || previous.para !== chunk.para) {
         document.getElementById(`para-${chunk.para}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
       }
-
-      const emitWord = (wordIndex: number): void => {
-        if (wordIndex < 0 || wordIndex >= words.length) return;
-        if (wordIndex === lastWordIndex) return;
-        const word = words[wordIndex];
-        lastWordIndex = wordIndex;
-        onWordRef.current?.({
-          para: chunk.para,
-          start: word.start + chunk.offset,
-          end: word.end + chunk.offset,
-        });
-      };
-
-      // Keep a 50 ms estimator alive even when the browser supplies boundary
-      // events. Android Chrome/WebView engines may emit only a subset of them.
-      clearTimer();
-      timerRef.current = window.setInterval(() => {
-        if (runId !== runIdRef.current || stoppedRef.current) return;
-        if (window.speechSynthesis.paused || !words.length) return;
-        const elapsedSinceSync = Math.max(0, performance.now() - lastSyncTime);
-        const estimated = lastBoundary ? Math.max(lastWordIndex, Math.floor(elapsedSinceSync / (paceRef.current / atRate)) + lastWordIndex) : Math.floor(elapsedSinceSync / (paceRef.current / atRate));
-        emitWord(Math.min(words.length - 1, estimated));
-      }, 50);
-
-      emitWord(0);
 
       const utterance = new SpeechSynthesisUtterance(chunk.text);
       utterance.rate = atRate;
@@ -177,36 +137,34 @@ export function TtsPlayer({ paragraphs, speakTexts, lang, onWord, onAdvance }: T
 
       utterance.onstart = () => {
         if (runId !== runIdRef.current || stoppedRef.current) return;
-        lastSyncTime = performance.now();
-        lastBoundary = false;
-        emitWord(0);
+        onWordRef.current?.(null);
       };
 
-      utterance.onboundary = (event) => {
+      utterance.onboundary = (event: SpeechSynthesisEvent) => {
         if (runId !== runIdRef.current || stoppedRef.current) return;
         if (event.name && event.name !== "word") return;
-        const indexFromBoundary = boundaryToWordIndex(chunk.text, event.charIndex);
-        if (indexFromBoundary < 0) return;
-        lastBoundary = true;
-        lastWordIndex = indexFromBoundary - 1;
-        lastSyncTime = performance.now();
-        emitWord(indexFromBoundary);
+
+        // Android NoveLA receives start/end from TextToSpeech.onRangeStart.
+        // On the Web, use the browser's engine-provided charIndex/charLength
+        // directly. Nothing is inferred from the text or from timing.
+        const range = exactBoundaryRange(event);
+        if (!range) return;
+
+        const start = range.start + chunk.offset;
+        const end = range.end + chunk.offset;
+        if (start < chunk.offset || end > chunk.offset + chunk.text.length || end <= start) return;
+        onWordRef.current?.({ para: chunk.para, start, end });
       };
 
       utterance.onend = () => {
         if (runId !== runIdRef.current || stoppedRef.current) return;
-        clearTimer();
-        if (words.length) emitWord(words.length - 1);
-        paceRef.current = calibratePace(paceRef.current, performance.now() - startedAt, words.length);
         onWordRef.current?.(null);
         speakNext(index + 1);
       };
 
       utterance.onerror = (event) => {
         if (runId !== runIdRef.current || stoppedRef.current) return;
-        // cancelled/interrupted is normal during restart/stop; other errors stop cleanly.
         if (event.error === "canceled" || event.error === "interrupted") return;
-        clearTimer();
         setPlaying(false);
         setCurrent(-1);
         onWordRef.current?.(null);
@@ -233,7 +191,11 @@ export function TtsPlayer({ paragraphs, speakTexts, lang, onWord, onAdvance }: T
 
   return (
     <div className="tts-bar card">
-      {!playing ? <button onClick={() => (current >= 0 ? pauseOrResume() : speakFrom(0))}>▶ TTS</button> : <button onClick={pauseOrResume}>⏸</button>}
+      {!playing ? (
+        <button onClick={() => (current >= 0 ? pauseOrResume() : speakFrom(0))}>▶ TTS</button>
+      ) : (
+        <button onClick={pauseOrResume}>⏸</button>
+      )}
       <button onClick={stop}>⏹</button>
       <label className="inline">
         speed
@@ -245,7 +207,9 @@ export function TtsPlayer({ paragraphs, speakTexts, lang, onWord, onAdvance }: T
             if (current >= 0) speakFrom(current, nextRate);
           }}
         >
-          {[0.5, 0.75, 1, 1.25, 1.5, 2].map((r) => <option key={r} value={r}>{r}×</option>)}
+          {[0.5, 0.75, 1, 1.25, 1.5, 2].map((r) => (
+            <option key={r} value={r}>{r}×</option>
+          ))}
         </select>
       </label>
       {current >= 0 && <span className="muted small">{current + 1}/{paragraphs.length}</span>}
