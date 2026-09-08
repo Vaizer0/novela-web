@@ -1,19 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { findEntry, getSourceRuntime, rawImg } from "../lib/sources";
 import { db } from "../db/db";
 import { applyRules, getRules } from "../lib/cleanup";
 import { LOCAL_SOURCE_ID } from "../lib/localImport";
 import { TtsPlayer } from "../components/TtsPlayer";
-import {
-  getTranslationConfig,
-  getBookTranslationSettings,
-  setBookTranslationSettings,
-  getBookTranslateEnabled,
-  setBookTranslateEnabled,
-  translateParagraphs,
-  type TranslationConfig,
-} from "../lib/translate";
+import { getTranslationConfig, getBookTranslationSettings, setBookTranslationSettings, getBookTranslateEnabled, setBookTranslateEnabled, translateParagraphs, type TranslationConfig } from "../lib/translate";
 import type { TtsWordPos } from "../components/TtsPlayer";
 
 interface ReaderSettings { fontSize: number; lineHeight: number; theme: "light" | "dark"; }
@@ -28,6 +20,7 @@ function loadSettings(): ReaderSettings {
 }
 
 export default function Reader() {
+  const navigate = useNavigate();
   const [params] = useSearchParams();
   const sourceId = params.get("source") ?? "";
   const bookUrl = params.get("bookUrl") ?? "";
@@ -109,9 +102,7 @@ export default function Reader() {
     const max = doc.scrollHeight - window.innerHeight;
     const pos = max > 0 ? Math.min(1, Math.max(0, window.scrollY / max)) : 0;
     window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(() => {
-      void db.progress.put({ bookUrl, chapterUrl, position: pos, updatedAt: Date.now() });
-    }, 500);
+    saveTimer.current = window.setTimeout(() => { void db.progress.put({ bookUrl, chapterUrl, position: pos, updatedAt: Date.now() }); }, 500);
   }, [bookUrl, chapterUrl]);
 
   useEffect(() => {
@@ -124,9 +115,8 @@ export default function Reader() {
     restored.current = false;
     if (text === null && pages === null) return;
     void db.progress.get(bookUrl).then((p) => {
-      if (p && p.chapterUrl === chapterUrl && p.position > 0) {
-        requestAnimationFrame(() => window.scrollTo(0, p.position * (document.documentElement.scrollHeight - window.innerHeight)));
-      } else window.scrollTo(0, 0);
+      if (p && p.chapterUrl === chapterUrl && p.position > 0) requestAnimationFrame(() => window.scrollTo(0, p.position * (document.documentElement.scrollHeight - window.innerHeight)));
+      else window.scrollTo(0, 0);
       restored.current = true;
     });
   }, [text, pages, bookUrl, chapterUrl]);
@@ -172,10 +162,10 @@ export default function Reader() {
   return (
     <div className="reader" style={{ background: dark ? "#111" : "#fff", color: dark ? "#eee" : "#222", minHeight: "100vh" }}>
       <div className="reader-bar">
-        {nav.prev ? <a href={chapterHref(nav.prev)}>← Prev</a> : <span className="muted">← Prev</span>}
+        {nav.prev ? <Link to={chapterHref(nav.prev)}>← Prev</Link> : <span className="muted">← Prev</span>}
         <button onClick={() => setDrawerOpen((v) => !v)}>Aa</button>
-        <a href={`/novel?source=${encodeURIComponent(sourceId)}&url=${encodeURIComponent(bookUrl)}`}>Contents</a>
-        {nav.next ? <a href={chapterHref(nav.next)}>Next →</a> : <span className="muted">Next →</span>}
+        <Link to={`/novel?source=${encodeURIComponent(sourceId)}&url=${encodeURIComponent(bookUrl)}`}>Contents</Link>
+        {nav.next ? <Link to={chapterHref(nav.next)}>Next →</Link> : <span className="muted">Next →</span>}
       </div>
 
       {drawerOpen && (
@@ -193,21 +183,19 @@ export default function Reader() {
         </div>
       )}
 
-      {paragraphs.length > 0 && <TtsPlayer paragraphs={paragraphs} speakTexts={translated ?? paragraphs} lang={translated ? trConfig.toLang : navigator.language} onWord={setTtsWord} onAdvance={() => { if (nav.next) window.location.href = chapterHref(nav.next); }} />}
+      {paragraphs.length > 0 && <TtsPlayer paragraphs={paragraphs} speakTexts={translated ?? paragraphs} lang={translated ? trConfig.toLang : navigator.language} onWord={setTtsWord} onAdvance={() => { if (nav.next) navigate(chapterHref(nav.next)); }} />}
 
       <div className="reader-content" style={{ fontSize: settings.fontSize, lineHeight: settings.lineHeight }}>
         <h2>{nav.title}</h2>
         {error && <p className="error">{error}</p>}
         {!error && text === null && pages === null && <p className="muted">Loading…</p>}
         {translationError && !translated && <p className="error">Translation unavailable: {translationError}. Showing the original text.</p>}
-        {paragraphs.length > 0 && translated && (
-          <div className="bilingual">{paragraphs.map((p, i) => <div key={i} className="bi-row"><p id={`para-${i}`} className={ttsWord?.para === i ? "tts-active" : undefined}>{highlight(p, ttsWord, i, false)}</p><p className={ttsWord?.para === i ? "tts-active" : undefined}>{highlight(translated[i] ?? "", ttsWord, i, true)}</p></div>)}</div>
-        )}
+        {paragraphs.length > 0 && translated && <div className="bilingual">{paragraphs.map((p, i) => <div key={i} className="bi-row"><p id={`para-${i}`} className={ttsWord?.para === i ? "tts-active" : undefined}>{highlight(p, ttsWord, i, false)}</p><p className={ttsWord?.para === i ? "tts-active" : undefined}>{highlight(translated[i] ?? "", ttsWord, i, true)}</p></div>)}</div>}
         {paragraphs.length > 0 && !translated && <div>{paragraphs.map((p, i) => <p key={i} id={`para-${i}`} className={ttsWord?.para === i ? "tts-active" : undefined}>{highlight(p, ttsWord, i, false)}</p>)}</div>}
         {pages && <div className="manga-pages">{pages.map((u) => <img key={u} src={rawImg(u)} alt="" loading="lazy" />)}</div>}
       </div>
 
-      <div className="tap-zones"><div onClick={() => nav.prev && (window.location.href = chapterHref(nav.prev))} /><div onClick={() => setDrawerOpen((v) => !v)} /><div onClick={() => nav.next && (window.location.href = chapterHref(nav.next))} /></div>
+      <div className="tap-zones"><div onClick={() => nav.prev && navigate(chapterHref(nav.prev))} /><div onClick={() => setDrawerOpen((v) => !v)} /><div onClick={() => nav.next && navigate(chapterHref(nav.next))} /></div>
     </div>
   );
 }
