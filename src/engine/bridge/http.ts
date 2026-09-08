@@ -30,6 +30,42 @@ export type PageFetcher = (url: string, init: {
 }) => Promise<FetchEnvelope>;
 
 const DIRECT_TIMEOUT_MS = 45_000;
+const sourceUserAgents = new Map<string, string>();
+
+/** Register the effective UA for a Lua source, mirroring NoveLA's PluginUARegistry. */
+export function setSourceUserAgent(sourceId: string, userAgent: string): void {
+  const value = userAgent.trim();
+  if (value) sourceUserAgents.set(sourceId, value);
+  else sourceUserAgents.delete(sourceId);
+}
+
+export function clearSourceUserAgent(sourceId: string): void {
+  sourceUserAgents.delete(sourceId);
+}
+
+function presetUserAgent(preset: string): string | null {
+  const aliases: Record<string, string> = {
+    "Chrome 150 (Windows)": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+    "Safari 18 (macOS)": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+    "Firefox 152 (Windows)": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0",
+    "Edge 150 (Windows)": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    "Chrome 150 (Android)": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36",
+    "Safari 18 (iOS)": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+    "Firefox 152 (Android)": "Mozilla/5.0 (Android 16; Mobile; rv:152.0) Gecko/152.0 Firefox/152.0",
+    "Edge 150 (Android)": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36 EdgA/150.0.0.0",
+    "Samsung Internet 30.0 (Android)": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/30.0 Chrome/143.0.0.0 Mobile Safari/537.36",
+    "Chrome Desktop": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+    "Safari Desktop": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+    "Firefox Desktop": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0",
+    "Edge Desktop": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    "Chrome Mobile": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36",
+    "Safari Mobile": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+    "Firefox Mobile": "Mozilla/5.0 (Android 16; Mobile; rv:152.0) Gecko/152.0 Firefox/152.0",
+    "Edge Mobile": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36 EdgA/150.0.0.0",
+    "Samsung Mobile": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/30.0 Chrome/143.0.0.0 Mobile Safari/537.36",
+  };
+  return aliases[preset] ?? (preset.startsWith("Mozilla/") ? preset : null);
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -40,9 +76,13 @@ async function fetchDirect(url: string, init: { method?: string; headers?: Recor
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DIRECT_TIMEOUT_MS);
   try {
+    const headers = { ...(init.headers ?? {}) };
+    // Browsers treat User-Agent as a forbidden request header. The server-side
+    // proxy can still honor source-specific UAs, but a direct fallback cannot.
+    for (const key of Object.keys(headers)) if (key.toLowerCase() === "user-agent") delete headers[key];
     const res = await fetch(url, {
       method,
-      headers: init.headers,
+      headers,
       body: method !== "GET" && method !== "HEAD" ? init.body : undefined,
       redirect: "follow",
       signal: controller.signal,
@@ -55,11 +95,11 @@ async function fetchDirect(url: string, init: { method?: string; headers?: Recor
     } catch {
       body = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
     }
-    const headers: Record<string, string[]> = {};
+    const headersOut: Record<string, string[]> = {};
     res.headers.forEach((value, key) => {
-      (headers[key.toLowerCase()] ??= []).push(value);
+      (headersOut[key.toLowerCase()] ??= []).push(value);
     });
-    return { success: res.ok, body, code: res.status, headers };
+    return { success: res.ok, body, code: res.status, headers: headersOut };
   } catch (e) {
     return {
       success: false,
@@ -73,11 +113,7 @@ async function fetchDirect(url: string, init: { method?: string; headers?: Recor
   }
 }
 
-/**
- * Direct Jina Reader fallback. Reader can fetch publicly accessible URLs and
- * can return raw HTML, which is useful for Lua selectors and Cloudflare-heavy
- * sites when the app's own proxy is unreachable.
- */
+/** Direct Jina Reader fallback. */
 async function fetchDirectJina(url: string, sourceInit: { headers?: Record<string, string> }): Promise<FetchEnvelope> {
   const jinaUrl = `https://r.jina.ai/${url}`;
   const controller = new AbortController();
@@ -88,6 +124,7 @@ async function fetchDirectJina(url: string, sourceInit: { headers?: Record<strin
       "x-respond-with": "html",
       ...(sourceInit.headers ?? {}),
     };
+    for (const key of Object.keys(headers)) if (key.toLowerCase() === "user-agent") delete headers[key];
     const res = await fetch(jinaUrl, { headers, redirect: "follow", signal: controller.signal });
     const body = await res.text();
     const outHeaders: Record<string, string[]> = {};
@@ -116,10 +153,10 @@ async function fetchDirectJina(url: string, sourceInit: { headers?: Record<strin
 
 /**
  * Default fetcher:
- *  1. server-side proxy (best compatibility, including POST/encoded pages)
- *  2. direct browser GET (works when the target permits CORS)
- *  3. direct Jina Reader GET (works without target CORS and can bypass many blocks)
- *  4. server-side Jina Reader through the proxy
+ *  1. server-side proxy
+ *  2. direct browser GET
+ *  3. direct Jina Reader GET
+ *  4. Jina Reader through server-side proxy
  *  5. optional user-hosted FlareSolverr
  */
 export const defaultFetcher: PageFetcher = async (url, init) => {
@@ -138,21 +175,16 @@ export const defaultFetcher: PageFetcher = async (url, init) => {
 
   const method = (init.method ?? "GET").toUpperCase();
 
-  // Browser direct GET is the closest equivalent to the original request and
-  // preserves the page's native HTML/charset when the site exposes CORS.
   if (method === "GET" && !isCfBlocked(env)) {
     const direct = await fetchDirect(url, init);
     if (!isCfBlocked(direct) && direct.success) return direct;
   }
 
-  // Jina Reader is GET-only here: do not silently change POST semantics.
   if (method === "GET") {
     const jinaDirect = await fetchDirectJina(url, init);
     if (!isCfBlocked(jinaDirect) && jinaDirect.success) return jinaDirect;
   }
 
-  // Last attempt through the server-side proxy, useful when the first result
-  // was a Cloudflare page but Netlify itself is still available.
   const jinaProxy = await viaFunction(`https://r.jina.ai/${url}`, {
     headers: { "x-return-format": "html", "x-respond-with": "html" },
   });
@@ -164,21 +196,15 @@ export const defaultFetcher: PageFetcher = async (url, init) => {
     if (!isCfBlocked(retried) && retried.success) return retried;
   }
 
-  const detail = [env.error, jinaDirectOrProxyError(env, jinaProxy)].filter(Boolean).join("; ");
+  const fallbackError = jinaProxy.error ?? env.error ?? "fallbacks unavailable";
   return {
     ...env,
     success: false,
     error: isCfBlocked(env)
-      ? `Cloudflare-blocked source — all fetch strategies failed${detail ? `: ${detail}` : ""}`
-      : `Source fetch failed${detail ? `: ${detail}` : ""}`,
+      ? `Cloudflare-blocked source — all fetch strategies failed: ${fallbackError}`
+      : `Source fetch failed: ${fallbackError}`,
   };
 };
-
-function jinaDirectOrProxyError(primary: FetchEnvelope, proxy: FetchEnvelope): string {
-  if (proxy.error) return proxy.error;
-  if (primary.error) return primary.error;
-  return "fallbacks unavailable";
-}
 
 /** GET through the Netlify function with custom headers. */
 async function viaFunction(url: string, init?: RequestInit): Promise<FetchEnvelope> {
@@ -210,8 +236,6 @@ function defaultHeaders(url: string): Record<string, string> {
   };
 }
 
-// ── TTL cache (port of Android httpGetCache) ────────────────────────────────
-
 const CACHE_TTL_MS = 2_000;
 const MAX_ENTRIES = 100;
 const MAX_TOTAL_BODY = 4_000_000;
@@ -238,8 +262,6 @@ function putCache(key: string, env: FetchEnvelope): void {
   if (cache.size > MAX_ENTRIES || totalLen > MAX_TOTAL_BODY) cache.clear();
 }
 
-// ── Core request path ───────────────────────────────────────────────────────
-
 async function request(
   fetcher: PageFetcher,
   sourceId: string,
@@ -251,13 +273,14 @@ async function request(
   const pluginHeaders = config?.headers ?? {};
   const charset = config?.charset || "utf-8";
   const headers: Record<string, string> = { ...defaultHeaders(url), ...pluginHeaders };
-
-  // Attach persisted cookies unless the plugin set its own Cookie header.
   if (!Object.keys(pluginHeaders).some((k) => k.toLowerCase() === "cookie")) {
     const cookies = getCookiesFor(url);
     const cookieHeader = Object.entries(cookies).map(([n, v]) => `${n}=${v}`).join("; ");
     if (cookieHeader !== "") headers["Cookie"] = cookieHeader;
   }
+
+  const ua = !Object.keys(headers).some((k) => k.toLowerCase() === "user-agent") ? sourceUserAgents.get(sourceId) : undefined;
+  if (ua) headers["User-Agent"] = ua;
 
   const cacheKey = `${url}|${charset}|${sourceId}|${method}|${body ?? ""}|${hashString(JSON.stringify(headers))}`;
   const hit = cache.get(cacheKey);
@@ -265,7 +288,6 @@ async function request(
 
   try {
     const env = await fetcher(url, { method, headers, body, charset });
-    // Persist any cookies the server set so later requests carry them.
     storeSetCookies(url, env.headers?.["set-cookie"]);
     putCache(cacheKey, env);
     return env;
@@ -290,3 +312,5 @@ export function makeHttpBridge(fetcher: PageFetcher, sourceId: string) {
       ),
   };
 }
+
+export { presetUserAgent };
