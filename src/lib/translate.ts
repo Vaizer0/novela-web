@@ -59,6 +59,7 @@ function cacheKey(backend: string, cfg: TranslationConfig, text: string): Promis
 
 const GOOGLE_MAX_CHARS = 1800;
 const REQUEST_TIMEOUT_MS = 12000;
+const GOOGLE_HOSTS = ["https://translate.googleapis.com", "https://translate.google.com"];
 
 async function withTimeout<T>(promise: Promise<T>, ms = REQUEST_TIMEOUT_MS): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -83,18 +84,45 @@ function splitForGoogle(text: string): string[] {
 }
 
 function parseGoogle(data: unknown): string {
-  const root = data as unknown[];
-  const segs = Array.isArray(root?.[0]) ? root[0] as unknown[] : [];
+  if (!Array.isArray(data) || !Array.isArray(data[0])) throw new Error("Google returned an invalid translation response");
+  const segs = data[0] as unknown[];
   const out = segs.map((seg) => Array.isArray(seg) ? String(seg[0] ?? "") : "").join("");
   if (!out.trim()) throw new Error("Google returned an empty translation");
   return out;
 }
 
+async function requestGoogle(host: string, text: string, cfg: TranslationConfig): Promise<string> {
+  const url = `${host}/translate_a/single?client=gtx&sl=${encodeURIComponent(cfg.fromLang)}&tl=${encodeURIComponent(cfg.toLang)}&dt=t&q=${encodeURIComponent(text)}`;
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const res = await withTimeout(fetch(url, {
+        method: "GET",
+        headers: { Accept: "application/json, text/plain, */*" },
+        mode: "cors",
+        credentials: "omit",
+      }));
+      const raw = await res.text();
+      if (!res.ok) throw new Error(`Google HTTP ${res.status}`);
+      let data: unknown;
+      try { data = JSON.parse(raw); } catch { throw new Error("Google returned a non-JSON response"); }
+      return parseGoogle(data);
+    } catch (e) {
+      lastError = e instanceof Error ? e : new Error(String(e));
+      if (attempt === 0) await new Promise((resolve) => window.setTimeout(resolve, 350));
+    }
+  }
+  throw lastError ?? new Error("Google translation failed");
+}
+
 async function directGoogle(text: string, cfg: TranslationConfig): Promise<string> {
-  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${encodeURIComponent(cfg.fromLang)}&tl=${encodeURIComponent(cfg.toLang)}&dt=t&q=${encodeURIComponent(text)}`;
-  const res = await withTimeout(fetch(url, { method: "GET", headers: { Accept: "application/json, text/plain, */*" }, mode: "cors", credentials: "omit" }));
-  if (!res.ok) throw new Error(`Google HTTP ${res.status}`);
-  return parseGoogle(await res.json());
+  let firstError: Error | null = null;
+  for (const host of GOOGLE_HOSTS) {
+    try { return await requestGoogle(host, text, cfg); } catch (e) {
+      if (!firstError) firstError = e instanceof Error ? e : new Error(String(e));
+    }
+  }
+  throw firstError ?? new Error("Google translation failed");
 }
 
 async function viaProxy(url: string, init: RequestInit = {}): Promise<Response> {
@@ -104,25 +132,41 @@ async function viaProxy(url: string, init: RequestInit = {}): Promise<Response> 
     body: JSON.stringify({ url, method: init.method ?? "GET", headers: init.headers, body: typeof init.body === "string" ? init.body : undefined }),
   }));
   const text = await res.text();
-  let json: { success?: boolean; body?: string; code?: number };
-  try { json = JSON.parse(text) as { success?: boolean; body?: string; code?: number }; } catch { throw new Error(`translation proxy returned invalid response (${res.status})`); }
-  if (!json.success) throw new Error(`translation proxy failed (${json.code ?? res.status})`);
+  let json: { success?: boolean; body?: string; code?: number; error?: string };
+  try { json = JSON.parse(text) as { success?: boolean; body?: string; code?: number; error?: string }; } catch { throw new Error(`translation proxy returned invalid response (${res.status})`); }
+  if (!json.success) throw new Error(json.error || `translation proxy failed (${json.code ?? res.status})`);
   return new Response(json.body ?? "", { status: json.code ?? 200 });
+}
+
+async function googleThroughProxy(text: string, cfg: TranslationConfig): Promise<string> {
+  let firstError: Error | null = null;
+  for (const host of GOOGLE_HOSTS) {
+    const url = `${host}/translate_a/single?client=gtx&sl=${encodeURIComponent(cfg.fromLang)}&tl=${encodeURIComponent(cfg.toLang)}&dt=t&q=${encodeURIComponent(text)}`;
+    try { return parseGoogle(await (await viaProxy(url)).json()); } catch (e) {
+      if (!firstError) firstError = e instanceof Error ? e : new Error(String(e));
+    }
+  }
+  throw firstError ?? new Error("Google proxy translation failed");
 }
 
 async function translateGoogleSimple(text: string, cfg: TranslationConfig): Promise<string> {
   const chunks = splitForGoogle(text);
   const out: string[] = [];
   for (const chunk of chunks) {
-    try { out.push(await directGoogle(chunk, cfg)); continue; } catch { /* proxy fallback */ }
-    out.push(parseGoogle(await (await viaProxy(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=${encodeURIComponent(cfg.fromLang)}&tl=${encodeURIComponent(cfg.toLang)}&dt=t&q=${encodeURIComponent(chunk)}`)).json()));
+    try {
+      out.push(await directGoogle(chunk, cfg));
+    } catch (directError) {
+      try {
+        out.push(await googleThroughProxy(chunk, cfg));
+      } catch (proxyError) {
+        throw new Error(`Translation failed: ${directError instanceof Error ? directError.message : String(directError)}; proxy: ${proxyError instanceof Error ? proxyError.message : String(proxyError)}`);
+      }
+    }
   }
   return out.join(" ");
 }
 
 async function translateGoogleEnhanced(texts: string[], cfg: TranslationConfig): Promise<string[]> {
-  // The old /translate_a/t endpoint was fragile and required the unavailable proxy.
-  // Use the same reliable per-text Google path while keeping the public backend name.
   return Promise.all(texts.map((text) => translateGoogleSimple(text, cfg)));
 }
 
@@ -181,7 +225,7 @@ export async function translateParagraphs(texts: string[], cfg: TranslationConfi
     }
   };
 
-  const CONCURRENCY = cfg.backend.startsWith("google") ? 3 : 2;
+  const CONCURRENCY = cfg.backend.startsWith("google") ? 2 : 2;
   let cursor = 0;
   let firstError: Error | null = null;
   async function worker(): Promise<void> {
