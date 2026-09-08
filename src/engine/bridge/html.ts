@@ -12,14 +12,19 @@ export class LuaElement {
 
   constructor(node: Element, baseURI = "") {
     this.node = node;
-    this.baseURI = baseURI || node.ownerDocument?.baseURI || "";
+    // Do NOT inherit DOMParser's document.baseURI. In a web app that value is
+    // the app's GitHub Pages origin, not the novel source. NoveLA's Jsoup
+    // adapter intentionally leaves relative href/src values relative so each
+    // Lua plugin can resolve them against its own baseUrl via url_resolve().
+    this.baseURI = baseURI;
   }
 
   private abs(attr: string): string {
     const raw = this.node.getAttribute(attr) ?? "";
     if (raw === "") return "";
+    if (!this.baseURI) return raw;
     try {
-      return new URL(raw, this.baseURI || undefined).toString();
+      return new URL(raw, this.baseURI).toString();
     } catch {
       return raw;
     }
@@ -80,8 +85,6 @@ export class LuaElement {
 
 export function parseHtml(html: string): Document {
   const doc = new DOMParser().parseFromString(html, "text/html");
-  // DOMParser-created documents have a null location/baseURI; keep relative URLs
-  // relative so plugin-side url_resolve handles them.
   return doc;
 }
 
