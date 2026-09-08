@@ -2,13 +2,6 @@ import { LuaSource } from "./sourceAdapter";
 import { defaultFetcher, clearSourceUserAgent, presetUserAgent, setSourceUserAgent } from "./bridge/http";
 import { db, type CustomPlugin } from "../db/db";
 
-/**
- * Source registry: bundled plugins (loaded via import.meta.glob) merged with
- * user-installed custom plugins (Dexie). List metadata comes from a regex pass
- * over the script header; the Lua VM only spins up when a source is actually
- * used (getSourceRuntime).
- */
-
 export interface SourceMeta {
   id: string;
   name: string;
@@ -50,7 +43,6 @@ const ENABLED_KEY = "enabledSources";
 const CUSTOM_IMPORT_MIGRATION_KEY = "customLuaSourcesEnabledV1";
 const BUNDLED_IMPORT_MIGRATION_KEY = "bundledLuaSourcesEnabledV1";
 
-/** null = everything enabled (fresh install default). */
 export function getEnabledSources(): Set<string> | null {
   const raw = localStorage.getItem(ENABLED_KEY);
   if (raw === null) return null;
@@ -108,8 +100,28 @@ function invalidateCustom(): void {
   customCache = null;
 }
 
+/** Resolve a promise without allowing a broken local database to freeze the app. */
+async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => resolve(fallback), ms);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        window.clearTimeout(timer);
+        resolve(fallback);
+      },
+    );
+  });
+}
+
 export async function listSources(): Promise<SourceEntry[]> {
-  const [bundled, custom] = await Promise.all([bundledEntries(), customEntries()]);
+  // Bundled sources are the critical path. Resolve them first so an IndexedDB
+  // problem or stale database can never leave Browse stuck on "Loading…".
+  const bundled = await bundledEntries();
+  const custom = await withTimeout(customEntries(), 2_000, []);
   const byId = new Map<string, SourceEntry>();
   for (const entry of bundled) byId.set(entry.id, entry);
   for (const entry of custom) byId.set(entry.id, entry);
@@ -155,8 +167,6 @@ export async function getSourceRuntime(entry: SourceEntry): Promise<LuaSource> {
   const cached = runtimeCache.get(entry.id);
   if (cached) return cached;
   const src = await LuaSource.load(await entry.getCode(), `${entry.id}.lua`, defaultFetcher);
-
-  // Compatibility helpers used by portions of the upstream Lua collection.
   src.runtime.lua.global.set("string_lower", (value: string) => String(value ?? "").toLowerCase());
   src.runtime.lua.global.set("string_upper", (value: string) => String(value ?? "").toUpperCase());
   await registerUserAgentPreset(src);
@@ -168,9 +178,7 @@ export async function getSourceRuntime(entry: SourceEntry): Promise<LuaSource> {
       const detail = env.error ? `: ${env.error}` : "";
       throw new Error(`Failed to fetch ${url} (HTTP ${env.code})${detail}`);
     }
-    if (env.body.trim() === "") {
-      throw new Error(`Source returned an empty response for ${url}`);
-    }
+    if (env.body.trim() === "") throw new Error(`Source returned an empty response for ${url}`);
     return env;
   };
 
