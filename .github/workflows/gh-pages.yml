@@ -14,6 +14,9 @@ concurrency:
   group: pages
   cancel-in-progress: true
 
+env:
+  CI: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -28,6 +31,8 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Test
+        run: npm test
       - name: Build (GitHub Pages base path)
         run: npm run build && cp dist/index.html dist/404.html
         env:
