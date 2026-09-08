@@ -1,11 +1,12 @@
+import { NavLink } from "react-router-dom";
 import { rawImg } from "../lib/sources";
 import type { BookResult } from "../engine/types";
 
 export function BookCard({ book, sourceId }: { book: BookResult; sourceId: string }) {
   return (
-    <a
+    <NavLink
       className="book-card"
-      href={`/novel?source=${encodeURIComponent(sourceId)}&url=${encodeURIComponent(book.url)}`}
+      to={`/novel?source=${encodeURIComponent(sourceId)}&url=${encodeURIComponent(book.url)}`}
     >
       <div className="book-cover-wrap">
         <img src={rawImg(book.cover)} alt="" loading="lazy" />
@@ -15,7 +16,7 @@ export function BookCard({ book, sourceId }: { book: BookResult; sourceId: strin
         <span className="book-title">{book.title}</span>
         <span className="book-subtitle">{book.contentType === "manga" ? "Image reader" : "Web novel"}</span>
       </div>
-    </a>
+    </NavLink>
   );
 }
 
