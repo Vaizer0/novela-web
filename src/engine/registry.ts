@@ -1,12 +1,12 @@
 import { LuaSource } from "./sourceAdapter";
 import { defaultFetcher } from "./bridge/http";
 import { db, type CustomPlugin } from "../db/db";
+import { PROVIDED_LUA_SOURCES, providedSourceEntry } from "./providedSources";
 
 /**
  * Source registry: bundled plugins (loaded via import.meta.glob) merged with
- * user-installed custom plugins (Dexie). List metadata comes from a regex pass
- * over the script header; the Lua VM only spins up when a source is actually
- * used (getSourceRuntime).
+ * the provided pinned NoveLA source collection and user-installed custom
+ * plugins (Dexie). The Lua VM only spins up when a source is actually used.
  */
 
 export interface SourceMeta {
@@ -48,6 +48,7 @@ export function metaFromCode(code: string, fileName: string): SourceMeta {
 
 const ENABLED_KEY = "enabledSources";
 const CUSTOM_IMPORT_MIGRATION_KEY = "customLuaSourcesEnabledV1";
+const PROVIDED_SOURCES_MIGRATION_KEY = "providedLuaSourcesEnabledV1";
 
 /** null = everything enabled (fresh install default). */
 export function getEnabledSources(): Set<string> | null {
@@ -80,6 +81,10 @@ async function bundledEntries(): Promise<SourceEntry[]> {
   return bundledCache;
 }
 
+async function providedEntries(): Promise<SourceEntry[]> {
+  return PROVIDED_LUA_SOURCES.map((source) => providedSourceEntry(source) as SourceEntry);
+}
+
 async function customEntries(): Promise<SourceEntry[]> {
   if (!customCache) {
     const plugins = await db.customPlugins.toArray();
@@ -96,12 +101,25 @@ function invalidateCustom(): void {
   customCache = null;
 }
 
-/** All sources (bundled + custom), sorted by name. Custom entries override bundled entries by id. */
+/** All sources; custom entries override built-in entries with the same id. */
 export async function listSources(): Promise<SourceEntry[]> {
-  const [bundled, custom] = await Promise.all([bundledEntries(), customEntries()]);
+  const [bundled, provided, custom] = await Promise.all([bundledEntries(), providedEntries(), customEntries()]);
   const byId = new Map<string, SourceEntry>();
   for (const entry of bundled) byId.set(entry.id, entry);
+  for (const entry of provided) byId.set(entry.id, entry);
   for (const entry of custom) byId.set(entry.id, entry);
+
+  // Existing installs may have an explicit enabled-source set from before the
+  // provided collection existed. Enable the supplied built-ins once, without
+  // overriding later user choices.
+  if (localStorage.getItem(PROVIDED_SOURCES_MIGRATION_KEY) !== "1") {
+    const enabled = getEnabledSources();
+    if (enabled !== null) {
+      for (const entry of provided) enabled.add(entry.id);
+      setEnabledSources(enabled);
+    }
+    localStorage.setItem(PROVIDED_SOURCES_MIGRATION_KEY, "1");
+  }
 
   // Older builds could import custom Lua files while leaving them absent from
   // an existing explicit enabled-source set. Perform a one-time migration so
