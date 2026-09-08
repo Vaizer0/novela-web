@@ -97,7 +97,6 @@ function invalidateCustom(): void {
   customCache = null;
 }
 
-/** All sources (bundled + custom), sorted by name. Custom entries override bundled entries by id. */
 export async function listSources(): Promise<SourceEntry[]> {
   const [bundled, custom] = await Promise.all([bundledEntries(), customEntries()]);
   const byId = new Map<string, SourceEntry>();
@@ -113,8 +112,6 @@ export async function listSources(): Promise<SourceEntry[]> {
     localStorage.setItem(CUSTOM_IMPORT_MIGRATION_KEY, "1");
   }
 
-  // Bundled extensions are application features. Upgrade older explicit source
-  // lists once so a stale/empty list cannot hide the bundled Lua collection.
   if (localStorage.getItem(BUNDLED_IMPORT_MIGRATION_KEY) !== "1") {
     const enabled = getEnabledSources();
     if (enabled !== null && bundled.length > 0) {
@@ -129,27 +126,20 @@ export async function listSources(): Promise<SourceEntry[]> {
 
 const runtimeCache = new Map<string, LuaSource>();
 
-function registerUserAgentPreset(src: LuaSource): void {
+async function registerUserAgentPreset(src: LuaSource): Promise<void> {
   clearSourceUserAgent(src.meta.id);
   try {
-    const hasFn = src.runtime.lua.global.get("getUserAgentPreset");
-    if (typeof hasFn !== "function") return;
-    // The reference NoveLA calls this synchronously during source setup. Keep
-    // the same contract: the function only returns a short preset name/raw UA.
-    src.runtime.lua.doString("__novela_ua_preset = getUserAgentPreset()").then(() => {
-      const value = src.runtime.lua.global.get("__novela_ua_preset");
-      if (typeof value !== "string") return;
-      const ua = presetUserAgent(value);
-      if (ua) setSourceUserAgent(src.meta.id, ua);
-    }).catch(() => {
-      /* Presets are optional; normal UA remains active. */
-    });
+    if (typeof src.runtime.lua.global.get("getUserAgentPreset") !== "function") return;
+    await src.runtime.lua.doString("__novela_ua_preset = getUserAgentPreset()");
+    const value = src.runtime.lua.global.get("__novela_ua_preset");
+    if (typeof value !== "string") return;
+    const ua = presetUserAgent(value);
+    if (ua) setSourceUserAgent(src.meta.id, ua);
   } catch {
-    /* optional */
+    /* Presets are optional; normal UA remains active. */
   }
 }
 
-/** LuaSource for a registry entry; one runtime per source id, cached. */
 export async function getSourceRuntime(entry: SourceEntry): Promise<LuaSource> {
   const cached = runtimeCache.get(entry.id);
   if (cached) return cached;
@@ -158,10 +148,8 @@ export async function getSourceRuntime(entry: SourceEntry): Promise<LuaSource> {
   // Compatibility helpers used by portions of the upstream Lua collection.
   src.runtime.lua.global.set("string_lower", (value: string) => String(value ?? "").toLowerCase());
   src.runtime.lua.global.set("string_upper", (value: string) => String(value ?? "").toUpperCase());
-  registerUserAgentPreset(src);
+  await registerUserAgentPreset(src);
 
-  // Reader/export code uses this direct page fetch for chapter HTML. Do not
-  // allow a transport failure to be mistaken for an empty chapter and cached.
   const fetchPage = src.fetchPage.bind(src);
   src.fetchPage = async (url: string) => {
     const env = await fetchPage(url);
