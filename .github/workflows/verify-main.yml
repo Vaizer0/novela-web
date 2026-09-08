@@ -18,7 +18,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm test -- --runInBand
+      - run: npm test
       - run: npm run build
       - name: Verify bundled Lua corpus
         run: |
