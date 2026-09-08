@@ -2,286 +2,253 @@ import { useEffect, useRef, useState } from "react";
 
 export interface TtsWordPos {
   para: number;
-  /** char offset of the current word within the spoken paragraph */
   start: number;
   end: number;
 }
 
 interface TtsPlayerProps {
-  /** paragraphs as displayed (used for counting) */
   paragraphs: string[];
-  /** text actually spoken — differs when translation is on */
   speakTexts: string[];
-  /** BCP-47 language of speakTexts, e.g. "en" */
   lang: string;
-  /** reports the currently spoken word for in-text highlighting */
   onWord?: (pos: TtsWordPos | null) => void;
-  /** called when the last paragraph finishes — reader may navigate next */
   onAdvance?: () => void;
 }
 
 function pickVoice(lang: string): SpeechSynthesisVoice | null {
   const voices = window.speechSynthesis.getVoices();
-  if (voices.length === 0) return null;
-  const base = lang.split("-")[0].toLowerCase();
-  return (
-    voices.find((v) => v.lang.toLowerCase() === lang.toLowerCase()) ??
-    voices.find((v) => v.lang.toLowerCase().startsWith(base)) ??
-    null
-  );
+  if (!voices.length) return null;
+  const requested = (lang || navigator.language || "en-US").toLowerCase();
+  const base = requested.split("-")[0];
+  return voices.find((v) => v.lang.toLowerCase() === requested) ?? voices.find((v) => v.lang.toLowerCase().startsWith(base)) ?? null;
 }
 
-/** Char offsets of every whitespace-delimited word in `text`. */
-function wordOffsets(text: string): Array<{ start: number; end: number }> {
+export function wordOffsets(text: string): Array<{ start: number; end: number }> {
   const out: Array<{ start: number; end: number }> = [];
   const re = /\S+/g;
-  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
-    out.push({ start: m.index, end: m.index + m[0].length });
-  }
+  for (let m = re.exec(text); m; m = re.exec(text)) out.push({ start: m.index, end: m.index + m[0].length });
   return out;
 }
 
-export interface TtsChunk {
-  text: string;
-  /** char offset of this chunk within its source paragraph */
-  offset: number;
+export function boundaryToWordIndex(text: string, charIndex: number): number {
+  const words = wordOffsets(text);
+  if (!words.length) return -1;
+  let i = words.findIndex((w) => charIndex >= w.start && charIndex < w.end);
+  if (i >= 0) return i;
+  if (charIndex < words[0].start) return 0;
+  for (let n = 0; n < words.length - 1; n++) if (charIndex >= words[n].end && charIndex < words[n + 1].start) return n + 1;
+  return words.length - 1;
 }
 
+export interface TtsChunk { text: string; offset: number }
 const MAX_CHUNK = 300;
 
-/**
- * Split text into sentence-sized chunks, keeping each chunk's char offset in
- * the source. Mirrors NoveLA Android's slice-and-anchor strategy: short
- * utterances bound highlight drift. Chunks longer than MAX_CHUNK are split
- * at the nearest space so no single utterance is very long.
- */
-export function splitChunks(text: string): Array<TtsChunk> {
-  const out: Array<TtsChunk> = [];
+export function splitChunks(text: string): TtsChunk[] {
+  const out: TtsChunk[] = [];
   const re = /[^.!?\n]+[.!?]*\s*/g;
-  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
-    let index = m.index;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    let offset = m.index;
     let piece = m[0];
     while (piece.length > MAX_CHUNK) {
       let cut = piece.lastIndexOf(" ", MAX_CHUNK);
       if (cut <= 0) cut = MAX_CHUNK;
-      out.push({ text: piece.slice(0, cut), offset: index });
-      index += cut;
+      out.push({ text: piece.slice(0, cut), offset });
+      offset += cut;
       piece = piece.slice(cut);
     }
-    if (piece.length > 0) out.push({ text: piece, offset: index });
+    if (piece) out.push({ text: piece, offset });
   }
   return out;
 }
 
-/**
- * EMA-blend the measured ms-per-word of a finished utterance into the running
- * pace estimate. Degenerate samples (too short, no words) are ignored.
- */
 export function calibratePace(prevMsPerWord: number, elapsedMs: number, wordCount: number): number {
   if (elapsedMs < 500 || wordCount === 0) return prevMsPerWord;
-  const actual = elapsedMs / Math.max(wordCount, 1);
-  return prevMsPerWord * 0.6 + actual * 0.4;
+  const actual = elapsedMs / wordCount;
+  return prevMsPerWord * 0.65 + actual * 0.35;
 }
 
-/**
- * Web Speech API mini-player. Speaks paragraphs in order with word-level
- * highlighting and continuous auto-scroll, then stops (or advances chapter).
- * Browser limitation vs Android: no background playback with screen off.
- */
 export function TtsPlayer({ paragraphs, speakTexts, lang, onWord, onAdvance }: TtsPlayerProps) {
   const [playing, setPlaying] = useState(false);
   const [rate, setRate] = useState(1);
   const [current, setCurrent] = useState(-1);
-  const stoppedRef = useRef(false);
-  // interval driving estimated word highlight when boundary events don't fire
-  const wordTimerRef = useRef<number | null>(null);
-  // latest values for async utterance callbacks
+  const stoppedRef = useRef(true);
+  const runIdRef = useRef(0);
+  const timerRef = useRef<number | null>(null);
   const rateRef = useRef(rate);
   const textsRef = useRef(speakTexts);
-  textsRef.current = speakTexts;
-  // self-calibrating ms-per-word estimate (~165 wpm at rate 1)
+  const onWordRef = useRef(onWord);
   const paceRef = useRef(60000 / 165);
 
-  useEffect(() => {
-    return () => {
-      stoppedRef.current = true;
-      window.speechSynthesis.cancel();
-      onWord?.(null);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  rateRef.current = rate;
+  textsRef.current = speakTexts;
+  onWordRef.current = onWord;
+
+  useEffect(() => () => {
+    stoppedRef.current = true;
+    runIdRef.current++;
+    window.speechSynthesis.cancel();
+    if (timerRef.current !== null) window.clearInterval(timerRef.current);
+    onWordRef.current?.(null);
   }, []);
+
+  function clearTimer(): void {
+    if (timerRef.current !== null) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }
+
   function stop(): void {
     stoppedRef.current = true;
+    runIdRef.current++;
     window.speechSynthesis.cancel();
-    if (wordTimerRef.current !== null) {
-      window.clearInterval(wordTimerRef.current);
-      wordTimerRef.current = null;
-    }
+    clearTimer();
     setPlaying(false);
     setCurrent(-1);
-    onWord?.(null);
-
+    onWordRef.current?.(null);
   }
-  function speakFrom(startPara: number, atRate?: number): void {
-    window.speechSynthesis.cancel();
+
+  function speakFrom(startPara: number, atRate = rateRef.current): void {
+    const runId = ++runIdRef.current;
     stoppedRef.current = false;
+    window.speechSynthesis.cancel();
+    clearTimer();
     setPlaying(true);
 
-    const r = atRate ?? rateRef.current;
-    // Sentence-chunked queue (NoveLA-style slicing): short utterances bound
-    // highlight drift, and per-chunk onend samples recalibrate the pace.
-    const queue = textsRef.current.flatMap((t, para) =>
-      splitChunks(t).map((c) => ({ para, ...c })),
-    );
-    let first = queue.findIndex((c) => c.para >= startPara);
-    if (first < 0) first = queue.length;
+    const queue = textsRef.current.flatMap((text, para) => splitChunks(text).map((chunk) => ({ para, ...chunk })));
+    let qi = queue.findIndex((item) => item.para >= startPara);
+    if (qi < 0) {
+      setPlaying(false);
+      return;
+    }
 
-    const speakNext = (qi: number): void => {
-      if (stoppedRef.current || qi >= queue.length) {
+    const speakNext = (index: number): void => {
+      if (stoppedRef.current || runId !== runIdRef.current) return;
+      if (index >= queue.length) {
         setPlaying(false);
         setCurrent(-1);
-        onWord?.(null);
-        if (!stoppedRef.current && qi >= queue.length) onAdvance?.();
+        onWordRef.current?.(null);
+        if (!stoppedRef.current && runId === runIdRef.current) onAdvance?.();
         return;
       }
-      const chunk = queue[qi];
-      const prev = qi > 0 ? queue[qi - 1] : null;
-      const paraChanged = !prev || prev.para !== chunk.para;
-      if (paraChanged) {
-        setCurrent(chunk.para);
-        // activate the paragraph immediately; start:-1 = "no word mark yet"
-        onWord?.({ para: chunk.para, start: -1, end: -1 });
-        document
-          .getElementById(`para-${chunk.para}`)
-          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+
+      const chunk = queue[index];
+      const words = wordOffsets(chunk.text);
+      const startedAt = performance.now();
+      let lastWordIndex = -1;
+      let lastSyncTime = startedAt;
+      let lastBoundary = false;
+      setCurrent(chunk.para);
+      onWordRef.current?.({ para: chunk.para, start: -1, end: -1 });
+
+      if (index === 0 || queue[index - 1].para !== chunk.para) {
+        document.getElementById(`para-${chunk.para}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
       }
 
-      // Word highlight: many engines (notably Android Chrome) never fire
-      // boundary events, so drive highlighting from a timing estimate and
-      // switch to precise events when the engine does send them. Chunk-local
-      // offsets map back into paragraph coordinates for Reader's highlight().
-      const words = wordOffsets(chunk.text);
-      let wi = 0;
-      let boundarySeen = false;
-      if (wordTimerRef.current !== null) window.clearInterval(wordTimerRef.current);
-      const t0 = performance.now();
-      wordTimerRef.current = window.setInterval(() => {
-        // don't run ahead while the engine is paused
-        if (window.speechSynthesis.paused) return;
-        if (stoppedRef.current || boundarySeen) {
-          if (wordTimerRef.current !== null) window.clearInterval(wordTimerRef.current);
-          wordTimerRef.current = null;
-          return;
-        }
-        if (wi < words.length) {
-          onWord?.({
-            para: chunk.para,
-            start: words[wi].start + chunk.offset,
-            end: words[wi].end + chunk.offset,
-          });
-          document
-            .getElementById(`para-${chunk.para}`)
-            ?.scrollIntoView({ behavior: "smooth", block: "center" });
-          wi++;
-        }
-      }, paceRef.current / r);
+      const emitWord = (wordIndex: number): void => {
+        if (wordIndex < 0 || wordIndex >= words.length) return;
+        if (wordIndex === lastWordIndex) return;
+        const word = words[wordIndex];
+        lastWordIndex = wordIndex;
+        onWordRef.current?.({
+          para: chunk.para,
+          start: word.start + chunk.offset,
+          end: word.end + chunk.offset,
+        });
+      };
 
-      const u = new SpeechSynthesisUtterance(chunk.text);
-      u.rate = r;
-      u.lang = lang;
-      const voice = pickVoice(lang);
-      if (voice) u.voice = voice;
-      u.onboundary = (ev: SpeechSynthesisEvent) => {
-        if (stoppedRef.current) return;
-        if (ev.name && ev.name !== "word") return;
-        boundarySeen = true;
-        if (wordTimerRef.current !== null) {
-          window.clearInterval(wordTimerRef.current);
-          wordTimerRef.current = null;
-        }
-        let start = ev.charIndex;
-        if (start > 0 && !/\s/.test(chunk.text[start - 1])) {
-          while (start > 0 && !/\s/.test(chunk.text[start - 1])) start--;
-        }
-        let end = start;
-        while (end < chunk.text.length && !/\s/.test(chunk.text[end])) end++;
-        onWord?.({ para: chunk.para, start: start + chunk.offset, end: end + chunk.offset });
-        document
-          .getElementById(`para-${chunk.para}`)
-          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      // Keep a 50 ms estimator alive even when the browser supplies boundary
+      // events. Android Chrome/WebView engines may emit only a subset of them.
+      clearTimer();
+      timerRef.current = window.setInterval(() => {
+        if (runId !== runIdRef.current || stoppedRef.current) return;
+        if (window.speechSynthesis.paused || !words.length) return;
+        const elapsedSinceSync = Math.max(0, performance.now() - lastSyncTime);
+        const estimated = lastBoundary ? Math.max(lastWordIndex, Math.floor(elapsedSinceSync / (paceRef.current / atRate)) + lastWordIndex) : Math.floor(elapsedSinceSync / (paceRef.current / atRate));
+        emitWord(Math.min(words.length - 1, estimated));
+      }, 50);
+
+      emitWord(0);
+
+      const utterance = new SpeechSynthesisUtterance(chunk.text);
+      utterance.rate = atRate;
+      utterance.lang = lang || navigator.language || "en-US";
+      const voice = pickVoice(utterance.lang);
+      if (voice) utterance.voice = voice;
+
+      utterance.onstart = () => {
+        if (runId !== runIdRef.current || stoppedRef.current) return;
+        lastSyncTime = performance.now();
+        lastBoundary = false;
+        emitWord(0);
       };
-      u.onend = () => {
-        if (wordTimerRef.current !== null) {
-          window.clearInterval(wordTimerRef.current);
-          wordTimerRef.current = null;
-        }
-        if (stoppedRef.current) return;
-        paceRef.current = calibratePace(paceRef.current, performance.now() - t0, words.length);
-        const next = queue[qi + 1];
-        if (!next || next.para !== chunk.para) onWord?.(null);
-        speakNext(qi + 1);
+
+      utterance.onboundary = (event) => {
+        if (runId !== runIdRef.current || stoppedRef.current) return;
+        if (event.name && event.name !== "word") return;
+        const indexFromBoundary = boundaryToWordIndex(chunk.text, event.charIndex);
+        if (indexFromBoundary < 0) return;
+        lastBoundary = true;
+        lastWordIndex = indexFromBoundary - 1;
+        lastSyncTime = performance.now();
+        emitWord(indexFromBoundary);
       };
-      u.onerror = () => {
-        if (wordTimerRef.current !== null) {
-          window.clearInterval(wordTimerRef.current);
-          wordTimerRef.current = null;
-        }
+
+      utterance.onend = () => {
+        if (runId !== runIdRef.current || stoppedRef.current) return;
+        clearTimer();
+        if (words.length) emitWord(words.length - 1);
+        paceRef.current = calibratePace(paceRef.current, performance.now() - startedAt, words.length);
+        onWordRef.current?.(null);
+        speakNext(index + 1);
+      };
+
+      utterance.onerror = (event) => {
+        if (runId !== runIdRef.current || stoppedRef.current) return;
+        // cancelled/interrupted is normal during restart/stop; other errors stop cleanly.
+        if (event.error === "canceled" || event.error === "interrupted") return;
+        clearTimer();
         setPlaying(false);
         setCurrent(-1);
-        onWord?.(null);
+        onWordRef.current?.(null);
       };
-      window.speechSynthesis.speak(u);
+
+      window.speechSynthesis.speak(utterance);
     };
-    speakNext(first);
+
+    speakNext(qi);
   }
 
   function pauseOrResume(): void {
-    if (window.speechSynthesis.speaking) {
-      if (window.speechSynthesis.paused) {
-        window.speechSynthesis.resume();
-        setPlaying(true);
-      } else {
-        window.speechSynthesis.pause();
-        setPlaying(false);
-      }
+    if (!window.speechSynthesis.speaking) return;
+    if (window.speechSynthesis.paused) {
+      window.speechSynthesis.resume();
+      setPlaying(true);
+    } else {
+      window.speechSynthesis.pause();
+      setPlaying(false);
     }
   }
 
-  if (paragraphs.length === 0) return null;
+  if (!paragraphs.length) return null;
 
   return (
     <div className="tts-bar card">
-      {!playing ? (
-        <button onClick={() => (current >= 0 ? pauseOrResume() : speakFrom(0))}>
-          ▶ TTS
-        </button>
-      ) : (
-        <button onClick={pauseOrResume}>⏸</button>
-      )}
+      {!playing ? <button onClick={() => (current >= 0 ? pauseOrResume() : speakFrom(0))}>▶ TTS</button> : <button onClick={pauseOrResume}>⏸</button>}
       <button onClick={stop}>⏹</button>
       <label className="inline">
         speed
         <select
           value={rate}
           onChange={(e) => {
-            const r = Number(e.target.value);
-            setRate(r);
-            // restart current paragraph at the new rate
-            if (current >= 0) speakFrom(current, r);
+            const nextRate = Number(e.target.value);
+            setRate(nextRate);
+            if (current >= 0) speakFrom(current, nextRate);
           }}
         >
-          {[0.5, 0.75, 1, 1.25, 1.5, 2].map((r) => (
-            <option key={r} value={r}>
-              {r}×
-            </option>
-          ))}
+          {[0.5, 0.75, 1, 1.25, 1.5, 2].map((r) => <option key={r} value={r}>{r}×</option>)}
         </select>
       </label>
-      {current >= 0 && (
-        <span className="muted small">
-          {current + 1}/{paragraphs.length}
-        </span>
-      )}
+      {current >= 0 && <span className="muted small">{current + 1}/{paragraphs.length}</span>}
     </div>
   );
 }
