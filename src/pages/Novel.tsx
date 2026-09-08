@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { findEntry, rawImg } from "../lib/sources";
 import { getSourceRuntime } from "../engine/registry";
 import type { BookDetails } from "../engine/types";
@@ -46,7 +46,6 @@ export default function Novel() {
         setDetails(d);
         setChapters(chs.map((c) => ({ title: c.title, url: c.url })));
 
-        // Persist book + chapter list so the library/reader work offline.
         const prev = await db.books.get(bookUrl);
         await db.books.put({ ...bookFromResult(sourceId, d), inLibrary: prev?.inLibrary ?? false });
         const stored = chs.map((c, i) => ({ ...chapterFromResult(bookUrl, c), position: i }));
@@ -122,10 +121,12 @@ export default function Novel() {
             {inLibrary ? "✓ In library" : "+ Add to library"}
           </button>
         </div>
+        <div>
           <button onClick={() => void handleExport()} disabled={exporting !== null}>
             {exporting ? `Exporting ${exporting.done}/${exporting.total}…` : "Export EPUB"}
           </button>
           {exportError && <p className="error">{exportError}</p>}
+        </div>
       </div>
 
       <div className="row">
@@ -172,9 +173,7 @@ export default function Novel() {
               <button onClick={() => updateRules(rules.filter((_, j) => j !== i))}>✕</button>
             </div>
           ))}
-          <button
-            onClick={() => updateRules([...rules, { find: "", replace: "", caseInsensitive: false }])}
-          >
+          <button onClick={() => updateRules([...rules, { find: "", replace: "", caseInsensitive: false }])}>
             + Add rule
           </button>
         </div>
@@ -187,13 +186,20 @@ export default function Novel() {
           {reversed ? "↑ Newest first" : "↓ Oldest first"}
         </button>
       </div>
-      <ol className="chapter-list">
-        {shown.map((c) => (
-          <li key={c.url}>
-            <a href={readerHref(c.url)}>{c.title}</a>
-          </li>
-        ))}
-      </ol>
+      {chapters.length === 0 ? (
+        <div className="card empty-state">
+          <h3>No chapters found</h3>
+          <p className="muted">The source returned no chapters. Check the source connection or try again later.</p>
+        </div>
+      ) : (
+        <ol className="chapter-list">
+          {shown.map((c) => (
+            <li key={c.url}>
+              <Link to={readerHref(c.url)}>{c.title}</Link>
+            </li>
+          ))}
+        </ol>
+      )}
     </div>
   );
 }
