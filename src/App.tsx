@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
 import Extensions from "./pages/Extensions";
 import Browse from "./pages/Browse";
@@ -25,13 +26,13 @@ function Brand() {
   );
 }
 
-function Navigation({ mobile = false }: { mobile?: boolean }) {
+function Navigation({ mobile = false, collapsed = false }: { mobile?: boolean; collapsed?: boolean }) {
   return (
     <nav className={mobile ? "mobile-nav" : "side-nav"} aria-label={mobile ? "Mobile navigation" : "Primary navigation"}>
       {navItems.map((item) => (
-        <NavLink key={item.to} to={item.to} end={item.to === "/"}>
+        <NavLink key={item.to} to={item.to} end={item.to === "/"} title={collapsed ? item.label : undefined}>
           <span className="nav-icon" aria-hidden="true">{item.icon}</span>
-          <span>{item.label}</span>
+          <span className="nav-label">{item.label}</span>
         </NavLink>
       ))}
     </nav>
@@ -39,13 +40,34 @@ function Navigation({ mobile = false }: { mobile?: boolean }) {
 }
 
 export default function App() {
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("novelaSidebarCollapsed") === "1");
+
+  function toggleSidebar(): void {
+    setSidebarCollapsed((value) => {
+      const next = !value;
+      localStorage.setItem("novelaSidebarCollapsed", next ? "1" : "0");
+      return next;
+    });
+  }
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <aside className="desktop-sidebar">
-        <Brand />
-        <Navigation />
+        <div className="sidebar-top">
+          <Brand />
+          <button
+            className="sidebar-toggle"
+            type="button"
+            onClick={toggleSidebar}
+            aria-label={sidebarCollapsed ? "Expand NoveLA sidebar" : "Collapse NoveLA sidebar"}
+            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            {sidebarCollapsed ? "›" : "‹"}
+          </button>
+        </div>
+        <Navigation collapsed={sidebarCollapsed} />
         <div className="sidebar-footer">
-          <span className="small">Read. Discover. Remember.</span>
+          <span className="small">{sidebarCollapsed ? "NoveLA" : "Read. Discover. Remember."}</span>
         </div>
       </aside>
 
