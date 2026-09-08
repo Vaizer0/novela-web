@@ -50,10 +50,24 @@ class Mutex {
   }
 }
 
+function normalizeChapters(chapters: ChapterResult[]): ChapterResult[] {
+  const seen = new Set<string>();
+  const out: ChapterResult[] = [];
+  for (const chapter of chapters) {
+    const url = chapter.url.trim();
+    const title = chapter.title.trim();
+    if (!url || !title || seen.has(url)) continue;
+    seen.add(url);
+    out.push({ ...chapter, url, title });
+  }
+  return out;
+}
+
 export class LuaSource {
   readonly meta: SourceMetadataInfo;
   readonly runtime: SourceRuntime;
   readonly hasParsePage: boolean;
+  readonly hasGetChapterList: boolean;
   readonly hasGetPageList: boolean;
   readonly hasFilterList: boolean;
   private readonly fetcher: PageFetcher;
@@ -63,13 +77,14 @@ export class LuaSource {
   private constructor(
     runtime: SourceRuntime,
     meta: SourceMetadataInfo,
-    flags: { hasParsePage: boolean; hasGetPageList: boolean; hasFilterList: boolean },
+    flags: { hasParsePage: boolean; hasGetChapterList: boolean; hasGetPageList: boolean; hasFilterList: boolean },
     scriptTable: Record<string, unknown> | null,
     fetcher: PageFetcher,
   ) {
     this.runtime = runtime;
     this.meta = meta;
     this.hasParsePage = flags.hasParsePage;
+    this.hasGetChapterList = flags.hasGetChapterList;
     this.hasGetPageList = flags.hasGetPageList;
     this.hasFilterList = flags.hasFilterList;
     this.scriptTable = scriptTable;
@@ -80,17 +95,13 @@ export class LuaSource {
   fetchPage(url: string): Promise<FetchEnvelope> {
     return this.fetcher(url, {});
   }
+
   static async load(code: string, fileName?: string, fetcher: PageFetcher = defaultFetcher): Promise<LuaSource> {
-    // Cheap pre-parse of the metadata header so registries can list sources
-    // without executing each script; full extraction happens after execution.
     const idGuess = /^id\s*=\s*["']([^"']+)["']/m.exec(code)?.[1] ?? `lua_${fileName ?? "unknown"}`;
     const runtime = await createSourceRuntime(idGuess, fetcher, WASM_URI);
     const result = (await runtime.lua.doString(code)) as unknown;
     const g = runtime.lua.global;
 
-    // Plugins may either declare globals or `return { ... }` a table of
-    // entry points (Android sets a metatable; we keep the table and look
-    // functions up in it as a fallback).
     const scriptTable =
       result && typeof result === "object" && !Array.isArray(result)
         ? (result as Record<string, unknown>)
@@ -124,6 +135,7 @@ export class LuaSource {
       meta,
       {
         hasParsePage: has("parsePage"),
+        hasGetChapterList: has("getChapterList"),
         hasGetPageList: has("getPageList"),
         hasFilterList: has("getFilterList"),
       },
@@ -133,18 +145,15 @@ export class LuaSource {
   }
 
   /**
-   * Entry-point invocation. Must run through doString (wasmoon-driven thread)
-   * so that :await() inside the __make_sync bridge wrappers can suspend;
-   * calling Lua functions directly from JS breaks promise suspension.
+   * Entry-point invocation. Must run through doString so :await() inside the
+   * bridge wrappers can suspend correctly; direct Lua function calls break
+   * promise suspension in wasmoon.
    */
   private call<T>(fn: string, ...args: unknown[]): Promise<T> {
     return this.mutex.run(async () => {
       const f = this.runtime.lua.global.get(fn) ?? this.scriptTable?.[fn];
       if (typeof f !== "function") throw new Error(`missing function ${fn}`);
       const g = this.runtime.lua.global;
-      // Marshal through JSON decoded inside the VM (__json_decode): JS objects
-      // returned from bridge functions become userdata proxies, so args must
-      // become genuine Lua tables via the pure-Lua decoder.
       g.set("__call_json", JSON.stringify(args));
       await this.runtime.lua.doString(
         `__call_args = __json_decode(__call_json); __call_res = ${fn}(table.unpack(__call_args))`,
@@ -227,46 +236,62 @@ export class LuaSource {
     };
   }
 
-  /** Chapter list; uses parsePage pagination when the plugin declares it. */
+  /**
+   * Load chapters using the plugin's paginated parsePage contract when it is
+   * truly exported. If that path fails or produces nothing, fall back to the
+   * classic getChapterList implementation when present.
+   */
   async chapters(bookUrl: string): Promise<ChapterResult[]> {
+    let parseError: unknown = null;
     if (this.hasParsePage) {
       const all: ChapterResult[] = [];
       let page = 1;
-      for (;;) {
-        let res: PagedChapters;
-        try {
-          res = await this.parsePage(bookUrl, page);
-        } catch (e) {
-          console.error(`parsePage [${this.meta.id}] page=${page}`, e);
-          break;
+      try {
+        for (;;) {
+          const res = await this.parsePage(bookUrl, page);
+          all.push(...res.chapters);
+          const totalPages = Math.min(200, Math.max(1, Number(res.totalPages) || 1));
+          if (page >= totalPages) break;
+          page++;
         }
-        all.push(...res.chapters);
-        if (page >= Math.max(1, res.totalPages)) break;
-        page++;
+        const normalized = normalizeChapters(all);
+        if (normalized.length > 0 || !this.hasGetChapterList) return normalized;
+      } catch (e) {
+        parseError = e;
+        console.error(`parsePage [${this.meta.id}]`, e);
       }
-      return all;
     }
-    try {
-      const arr = await this.call<Record<string, unknown>[]>("getChapterList", bookUrl);
-      return (arr ?? []).map(toChapterResult).filter((c): c is ChapterResult => c !== null);
-    } catch (e) {
-      console.error(`getChapterList [${this.meta.id}]`, e);
-      return [];
+
+    if (this.hasGetChapterList) {
+      try {
+        const arr = await this.call<unknown>("getChapterList", bookUrl);
+        const list = Array.isArray(arr) ? arr.map(toChapterResult).filter((c): c is ChapterResult => c !== null) : [];
+        const normalized = normalizeChapters(list);
+        if (normalized.length > 0) return normalized;
+      } catch (e) {
+        console.error(`getChapterList [${this.meta.id}]`, e);
+        if (parseError) throw new Error(`Both chapter loaders failed for ${this.meta.id}`);
+      }
     }
+
+    return [];
   }
 
   private async parsePage(bookUrl: string, page: number): Promise<PagedChapters> {
-    const res = await this.call<{ chapters?: Record<string, unknown>[]; totalPages?: number }>("parsePage", bookUrl, page);
+    const res = await this.call<{ chapters?: unknown; totalPages?: unknown }>("parsePage", bookUrl, page);
     if (!res || typeof res !== "object") throw new Error("parsePage returned non-table");
-    const chapters = (res.chapters ?? []).map(toChapterResult).filter((c): c is ChapterResult => c !== null);
-    return { chapters, totalPages: res.totalPages ?? 1 };
+    const raw = Array.isArray(res.chapters) ? res.chapters : [];
+    const chapters = raw.map(toChapterResult).filter((c): c is ChapterResult => c !== null);
+    return { chapters, totalPages: Number(res.totalPages) || 1 };
   }
 
   /** getChapterText(html, url) → text or null. */
   async chapterText(html: string, url: string): Promise<string | null> {
+    if (html.trim() === "") return null;
     try {
       const v = await this.call<string>("getChapterText", html, url);
-      return typeof v === "string" ? v : null;
+      const text = typeof v === "string" ? v.trim() : "";
+      return text === "" ? null : text;
     } catch (e) {
       console.error(`getChapterText [${this.meta.id}]`, e);
       return null;
@@ -276,10 +301,11 @@ export class LuaSource {
   /** getPageList(html, url) → image URLs in page order; null when plugin doesn't declare it. */
   async pageList(html: string, url: string): Promise<string[] | null> {
     if (!this.hasGetPageList) return null;
+    if (html.trim() === "") return [];
     try {
-      const v = await this.call<string[]>("getPageList", html, url);
+      const v = await this.call<unknown>("getPageList", html, url);
       if (!Array.isArray(v)) return [];
-      return v.filter((x): x is string => typeof x === "string" && x !== "");
+      return v.filter((x): x is string => typeof x === "string" && x.trim() !== "").map((x) => x.trim());
     } catch (e) {
       console.error(`getPageList [${this.meta.id}]`, e);
       return [];
@@ -312,15 +338,16 @@ function toCatalogPage(v: unknown, contentType: BookResult["contentType"]): Cata
     : [];
   return { items, hasNext: Boolean(obj.hasNext) };
 }
+
 function toChapterResult(v: unknown): ChapterResult | null {
   if (!v || typeof v !== "object") return null;
   const o = v as Record<string, unknown>;
-  return {
-    title: typeof o.title === "string" ? o.title : "",
-    url: typeof o.url === "string" ? o.url : "",
-    volume: typeof o.volume === "string" ? o.volume : null,
-    uploaded: typeof o.uploaded === "number" ? o.uploaded : null,
-  };
+  const title = typeof o.title === "string" ? o.title : o.title == null ? "" : String(o.title);
+  const url = typeof o.url === "string" ? o.url : o.url == null ? "" : String(o.url);
+  if (!url) return null;
+  const volume = o.volume == null || o.volume === "" ? null : String(o.volume);
+  const uploaded = typeof o.uploaded === "number" ? o.uploaded : o.uploaded == null ? null : Number(o.uploaded) || null;
+  return { title: title || url, url, volume, uploaded };
 }
 
 // ── Filter parsing (port of parseLuaFilterList) ─────────────────────────────
