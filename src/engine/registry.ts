@@ -111,6 +111,22 @@ export async function getSourceRuntime(entry: SourceEntry): Promise<LuaSource> {
   const cached = runtimeCache.get(entry.id);
   if (cached) return cached;
   const src = await LuaSource.load(await entry.getCode(), `${entry.id}.lua`, defaultFetcher);
+
+  // Reader/export code uses this direct page fetch for chapter HTML. Do not
+  // allow a transport failure to be mistaken for an empty chapter and cached.
+  const fetchPage = src.fetchPage.bind(src);
+  src.fetchPage = async (url: string) => {
+    const env = await fetchPage(url);
+    if (!env.success) {
+      const detail = env.error ? `: ${env.error}` : "";
+      throw new Error(`Failed to fetch ${url} (HTTP ${env.code})${detail}`);
+    }
+    if (env.body.trim() === "") {
+      throw new Error(`Source returned an empty response for ${url}`);
+    }
+    return env;
+  };
+
   runtimeCache.set(entry.id, src);
   return src;
 }
