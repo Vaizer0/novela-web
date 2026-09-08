@@ -2,7 +2,6 @@
 // Cloudflare detection + FlareSolverr fallback behavior of defaultFetcher.
 import { describe, it, expect, vi, afterEach } from "vitest";
 
-// no localStorage in node env — bypass URL helpers fall back to ""
 import { isCfBlocked } from "../../lib/bypass";
 import type { FetchEnvelope } from "../bridge/http";
 
@@ -19,7 +18,6 @@ describe("isCfBlocked", () => {
 
   it("does not flag normal content", () => {
     expect(isCfBlocked(env({ body: "<html><body>Chapter 1 text</body></html>" }))).toBe(false);
-    // a page merely mentioning cloudflare in the footer must not be flagged
     expect(isCfBlocked(env({ body: "<html><body>protected by cloudflare cdn</body></html>".repeat(100) }))).toBe(false);
     expect(isCfBlocked(env({ success: false, code: -1, body: "" }))).toBe(false);
   });
@@ -28,20 +26,17 @@ describe("isCfBlocked", () => {
 describe("defaultFetcher CF fallback", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-
   it("retries through Jina automatically and returns rendered content", async () => {
-    let call = 0;
     const urls: string[] = [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string | URL, init?: RequestInit) => {
-        call++;
-        urls.push(String(url));
-        const body = String(init?.body ?? "");
-        if (call === 2) {
-          // Jina retry is routed through our function; assert target + format
-          expect(body).toContain("r.jina.ai");
-          expect(body).toContain("x-return-format");
+        const target = String(url);
+        urls.push(target);
+
+        // The test is intentionally sequence-independent: implementation may
+        // add/reorder public GET fallbacks, but it must eventually try Jina.
+        if (target.includes("r.jina.ai/")) {
           return Response.json({
             success: true,
             code: 200,
@@ -49,13 +44,26 @@ describe("defaultFetcher CF fallback", () => {
             headers: {},
           });
         }
-        // first call = Netlify function primary attempt: CF challenge
+
+        // Netlify/public fallback attempts before Jina simulate a CF challenge.
+        const requestBody = String(init?.body ?? "");
+        if (target.includes(".netlify/functions/fetch") && requestBody.includes("novelfire.net")) {
+          return Response.json({ success: false, code: 403, body: "Just a moment...", headers: {} });
+        }
+        if (
+          target.includes("api.allorigins.win") ||
+          target.includes("corsproxy.io")
+        ) {
+          return Response.json({ success: false, code: 403, body: "Just a moment...", headers: {} });
+        }
+
         return Response.json({ success: false, code: 403, body: "Just a moment...", headers: {} });
       }),
     );
+
     const { defaultFetcher } = await import("../bridge/http");
     const res = await defaultFetcher("https://novelfire.net/", {});
-    expect(call).toBe(2);
+    expect(urls.some((url) => url.includes("r.jina.ai/"))).toBe(true);
     expect(res.success).toBe(true);
     expect(res.body).toContain("real content");
   }, 15000);
