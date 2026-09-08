@@ -6,9 +6,8 @@ import { fetchViaBypass, getBypassProxyUrl, isCfBlocked } from "../../lib/bypass
  * HTTP bridge for Lua extensions.
  *
  * GitHub Pages is a static host. Netlify credits can therefore not be treated
- * as a hard dependency for source browsing. Static-hosted builds now try
- * browser-safe/direct and public reader/CORS fallbacks before the optional
- * Netlify function. The Netlify path is still preferred on the Netlify build.
+ * as a hard dependency for source browsing. Static-hosted builds use fast,
+ * browser-safe fallbacks before the optional Netlify function.
  */
 
 export interface FetchEnvelope {
@@ -32,6 +31,7 @@ export type PageFetcher = (url: string, init: {
 }) => Promise<FetchEnvelope>;
 
 const REQUEST_TIMEOUT_MS = 25_000;
+const PUBLIC_FALLBACK_TIMEOUT_MS = 8_000;
 const sourceUserAgents = new Map<string, string>();
 
 export function setSourceUserAgent(sourceId: string, userAgent: string): void {
@@ -87,11 +87,7 @@ function withTimeout<T>(promise: Promise<T>, ms = REQUEST_TIMEOUT_MS): Promise<T
 function isStaticHosted(): boolean {
   if (typeof location === "undefined") return false;
   const host = location.hostname;
-  return !(
-    host === "localhost" ||
-    host === "127.0.0.1" ||
-    host.endsWith(".netlify.app")
-  );
+  return !(host === "localhost" || host === "127.0.0.1" || host.endsWith(".netlify.app"));
 }
 
 function normalizeHeaders(headers: Headers): Record<string, string[]> {
@@ -106,8 +102,6 @@ function browserSafeHeaders(input: Record<string, string>): Record<string, strin
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(input)) {
     const lower = key.toLowerCase();
-    // Browser JavaScript cannot set these reliably and custom headers trigger
-    // CORS preflight on the public fallbacks.
     if (lower === "user-agent" || lower === "referer" || lower === "cookie") continue;
     out[key] = value;
   }
@@ -123,7 +117,7 @@ async function fetchDirect(
     return { success: false, body: "", code: -1, headers: {}, error: "direct browser fallback supports GET/HEAD only" };
   }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), PUBLIC_FALLBACK_TIMEOUT_MS);
   try {
     const res = await fetch(url, {
       method,
@@ -146,14 +140,13 @@ async function fetchDirect(
   }
 }
 
-/** Public CORS proxy which returns the target body without rewriting it. */
 async function fetchCorsProxy(url: string, proxy: "allorigins" | "corsproxy"): Promise<FetchEnvelope> {
   const endpoint = proxy === "allorigins"
     ? `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
     : `https://corsproxy.io/?url=${encodeURIComponent(url)}`;
   try {
-    const res = await fetch(endpoint, { redirect: "follow" });
-    const body = await res.text();
+    const res = await withTimeout(fetch(endpoint, { redirect: "follow" }), PUBLIC_FALLBACK_TIMEOUT_MS);
+    const body = await withTimeout(res.text(), PUBLIC_FALLBACK_TIMEOUT_MS);
     return {
       success: res.ok && body.trim() !== "",
       body,
@@ -166,7 +159,6 @@ async function fetchCorsProxy(url: string, proxy: "allorigins" | "corsproxy"): P
   }
 }
 
-/** Jina Reader HTML mode; used only as a last GET fallback. */
 async function fetchJina(url: string, init: { headers?: Record<string, string> }): Promise<FetchEnvelope> {
   try {
     const headers: Record<string, string> = {
@@ -178,8 +170,8 @@ async function fetchJina(url: string, init: { headers?: Record<string, string> }
       const lower = key.toLowerCase();
       if (lower === "user-agent" || lower === "referer" || lower === "cookie") delete headers[key];
     }
-    const res = await withTimeout(fetch(`https://r.jina.ai/${url}`, { headers, redirect: "follow" }));
-    const body = await res.text();
+    const res = await withTimeout(fetch(`https://r.jina.ai/${url}`, { headers, redirect: "follow" }), PUBLIC_FALLBACK_TIMEOUT_MS);
+    const body = await withTimeout(res.text(), PUBLIC_FALLBACK_TIMEOUT_MS);
     return { success: res.ok && body.trim() !== "", body, code: res.status, headers: normalizeHeaders(res.headers) };
   } catch (e) {
     return { success: false, body: "", code: -1, headers: {}, error: e instanceof Error ? e.message : String(e) };
@@ -196,7 +188,7 @@ async function fetchNetlify(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url, ...init }),
     }));
-    const text = await res.text();
+    const text = await withTimeout(res.text());
     try {
       return JSON.parse(text) as FetchEnvelope;
     } catch {
@@ -207,22 +199,38 @@ async function fetchNetlify(
   }
 }
 
+async function fetchPublicFallback(url: string, init: { method?: string; headers?: Record<string, string>; body?: string; charset?: string }): Promise<FetchEnvelope> {
+  const method = (init.method ?? "GET").toUpperCase();
+  if (method !== "GET") return { success: false, body: "", code: -1, headers: {}, error: "public fallback supports GET only" };
+
+  const candidates = [
+    fetchDirect(url, init),
+    fetchCorsProxy(url, "allorigins"),
+    fetchCorsProxy(url, "corsproxy"),
+    fetchJina(url, init),
+  ];
+
+  try {
+    return await Promise.any(
+      candidates.map(async (promise) => {
+        const env = await promise;
+        if (!env.success || isCfBlocked(env) || env.body.trim() === "") {
+          throw new Error(env.error ?? `fallback rejected (HTTP ${env.code})`);
+        }
+        return env;
+      }),
+    );
+  } catch {
+    return { success: false, body: "", code: -1, headers: {}, error: "all public fetch fallbacks failed" };
+  }
+}
+
 async function fetchFallbacks(url: string, init: { method?: string; headers?: Record<string, string>; body?: string; charset?: string }): Promise<FetchEnvelope> {
   const method = (init.method ?? "GET").toUpperCase();
 
-  // Static hosting must remain useful even when the separate Netlify site is
-  // paused, so do not make the Netlify request the first/slow path here.
   if (method === "GET") {
-    const direct = await fetchDirect(url, init);
-    if (direct.success && !isCfBlocked(direct)) return direct;
-
-    for (const proxy of ["allorigins", "corsproxy"] as const) {
-      const cors = await fetchCorsProxy(url, proxy);
-      if (cors.success && !isCfBlocked(cors)) return cors;
-    }
-
-    const jina = await fetchJina(url, init);
-    if (jina.success && !isCfBlocked(jina)) return jina;
+    const publicResult = await fetchPublicFallback(url, init);
+    if (publicResult.success) return publicResult;
   }
 
   const netlify = await fetchNetlify(url, init);
@@ -234,15 +242,14 @@ async function fetchFallbacks(url: string, init: { method?: string; headers?: Re
     if (retried.success && !isCfBlocked(retried)) return retried;
   }
 
-  const detail = netlify.error ?? "all fetch strategies failed";
   return {
     success: false,
     body: "",
     code: netlify.code || -1,
     headers: netlify.headers ?? {},
     error: isCfBlocked(netlify)
-      ? `Cloudflare-blocked source — all fetch strategies failed: ${detail}`
-      : `Source fetch failed: ${detail}`,
+      ? `Cloudflare-blocked source — all fetch strategies failed: ${netlify.error ?? "netlify proxy unavailable"}`
+      : `Source fetch failed: ${netlify.error ?? "all fetch strategies failed"}`,
   };
 }
 
@@ -328,8 +335,6 @@ export function makeHttpBridge(fetcher: PageFetcher, sourceId: string) {
 export const defaultFetcher: PageFetcher = async (url, init) => {
   if (isStaticHosted()) return fetchFallbacks(url, init);
 
-  // On Netlify, keep the server-side proxy as the primary path because it can
-  // honor source-specific UAs/cookies and can reach sites blocked by CORS.
   const netlify = await fetchNetlify(url, init);
   if (netlify.success && !isCfBlocked(netlify)) return netlify;
 
