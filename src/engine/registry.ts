@@ -135,12 +135,26 @@ export function dropRuntime(id: string): void {
   runtimeCache.delete(id);
 }
 
+function enableNewSourceIds(ids: string[]): void {
+  const enabled = getEnabledSources();
+  if (enabled === null) return;
+  let changed = false;
+  for (const id of ids) {
+    if (!enabled.has(id)) {
+      enabled.add(id);
+      changed = true;
+    }
+  }
+  if (changed) setEnabledSources(enabled);
+}
+
 export async function installCustomPlugin(name: string, code: string): Promise<CustomPlugin> {
   const meta = metaFromCode(code, name);
   const record: CustomPlugin = { id: meta.id, name, code, addedAt: Date.now() };
   await db.customPlugins.put(record);
   dropRuntime(record.id);
   invalidateCustom();
+  enableNewSourceIds([record.id]);
   return record;
 }
 
@@ -154,6 +168,7 @@ export async function installCustomPlugins(plugins: Array<{ name: string; code: 
     records.push(record);
   }
   invalidateCustom();
+  enableNewSourceIds(records.map((record) => record.id));
   return records;
 }
 
