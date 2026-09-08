@@ -1,0 +1,136 @@
+name: Sync bundled Lua extensions
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download pinned NoveLA Lua collection
+        run: |
+          set -euo pipefail
+          curl -L --fail --retry 3 --retry-delay 2 \
+            "https://github.com/HnDK0/external-sources/archive/4b291650db35a16d3efd1565522ed5408815137b.tar.gz" \
+            -o external-sources.tar.gz
+          tar -xzf external-sources.tar.gz
+          echo "SOURCE_ROOT=$(find . -maxdepth 1 -type d -name 'external-sources-*' -print -quit)" >> "$GITHUB_ENV"
+
+      - name: Install bundled Lua extensions
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import shutil
+          from pathlib import Path
+
+          root = Path(os.environ["SOURCE_ROOT"])
+          dest = Path("src/assets/plugins")
+          dest.mkdir(parents=True, exist_ok=True)
+
+          # These target names match the extension filenames supplied for the
+          # NoveLA web build. Source paths are pinned to the exact external-
+          # sources snapshot used as the canonical baseline.
+          mapping = {
+              "NovelArrow.lua": "en/novelarrow.lua",
+              "asurascans.lua": "en/asurascans.lua",
+              "baca_lightnovel.lua": "id/bacalightnovel.lua",
+              "biquge_company.lua": "zh/biquge_company.lua",
+              "bookhamster.lua": "ru/bookhamster.lua",
+              "chikari.lua": "en/chikari.lua",
+              "chrysanthemumgarden.lua": "en/chrysanthemumgarden.lua",
+              "desu.lua": "ru/desu.lua",
+              "empirenovel.lua": "en/empirenovel.lua",
+              "faqwiki.lua": "en/faqwiki.lua",
+              "fictionzone.lua": "en/fictionzone.lua",
+              "freewebnovel.lua": "en/freewebnovel.lua",
+              "galaxynovels.lua": "ar/galaxynovels.lua",
+              "hiraethtranslation.lua": "en/hiraethtranslation.lua",
+              "ifreedom.lua": "ru/ifreedom.lua",
+              "indowebnovel.lua": "id/indowebnovel.lua",
+              "ixdzs8.lua": "zh/ixdzs8.lua",
+              "jaomix.lua": "ru/jaomix.lua",
+              "konkon.lua": "en/konkon.lua",
+              "lightnovelpub.lua": "en/lightnovelpub.lua",
+              "meionovels.lua": "id/meionovels.lua",
+              "nobadnovel.lua": "en/nobadnovel.lua",
+              "novel543.lua": "zh/novel543.lua",
+              "novelbuddy.lua": "en/novelbuddy_io.lua",
+              "noveldragon.lua": "en/noveldragon.lua",
+              "novelfire.lua": "en/novelfire.lua",
+              "novelfrance.lua": "fr/novelfrance.lua",
+              "novelfull.lua": "en/novelfull.lua",
+              "novelhall.lua": "en/novelhall.lua",
+              "novelhi.lua": "en/novelhi.lua",
+              "novelight.lua": "en/novelight.lua",
+              "novellive.lua": "en/novellive.lua",
+              "novelnice.lua": "en/novelnice.lua",
+              "novelphoenix.lua": "en/novelphoenix.lua",
+              "novelyra.lua": "en/novelyra.lua",
+              "piaotia.lua": "zh/piaotia.lua",
+              "quanben5.lua": "zh/quanben5.lua",
+              "ranobehub.lua": "ru/ranobehub.lua",
+              "ranobelib.lua": "ru/ranobelib.lua",
+              "ranobespace.lua": "ru/ranobespace.lua",
+              "read_novel_full.lua": "en/readnovelfull.lua",
+              "readfrom.lua": "en/readfrom.lua",
+              "rewayatclub.lua": "ar/rewayatclub.lua",
+              "royal_road.lua": "en/royal_road.lua",
+              "scribblehub.lua": "en/scribblehub.lua",
+              "shuba69.lua": "zh/shuba69.lua",
+              "sonicmtl.lua": "mtl/sonicmtl.lua",
+              "sto9.lua": "zh/sto9.lua",
+              "syosetu.lua": "ja/syosetu.lua",
+              "truthnovel.lua": "ar/truthnovel.lua",
+              "ttkan.lua": "zh/ttkan.lua",
+              "twkan.lua": "zh/twkan.lua",
+              "webnovel.lua": "en/webnovel.lua",
+              "wuxia_world_site.lua": "en/wuxiaworld_site.lua",
+              "wuxiabox.lua": "en/wuxiabox.lua",
+              "xbiquge.lua": "zh/xbiquge.lua",
+              # The supplied ZIP contained a newer standalone MVLEMPYR and
+              # WTR-LAB revision. Their canonical upstream equivalents are
+              # bundled under the same web-facing filenames here; custom/local
+              # variants remain supported through the Extensions importer.
+              "mvlempyr.com.lua": "en/mvlempyr.lua",
+              "wtrlab.lua": "mtl/wtrlab.lua",
+          }
+
+          missing = []
+          for target, source in mapping.items():
+              src = root / source
+              if not src.is_file():
+                  missing.append(source)
+                  continue
+              shutil.copy2(src, dest / target)
+
+          if missing:
+              raise SystemExit("Missing upstream Lua sources: " + ", ".join(missing))
+          print(f"Bundled {len(mapping)} Lua extensions")
+          PY
+
+      - name: Commit synchronized sources
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/assets/plugins/*.lua
+          if git diff --cached --quiet; then
+            echo "No Lua source changes detected."
+            exit 0
+          fi
+          git commit -m "chore: sync bundled Lua extensions"
+          git push
