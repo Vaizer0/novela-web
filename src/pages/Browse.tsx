@@ -212,12 +212,27 @@ export default function Browse() {
         )}
       </form>
 
-      {/* Source strip */}
-      <div className="source-strip">
+      {/* Source list */}
+      <div
+        className="source-strip"
+        style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8, padding: "12px 0 18px", overflow: "visible" }}
+      >
         {sources.map((s) => (
           <button
             key={s.id}
             className={s.id === activeId ? "strip-item active" : "strip-item"}
+            style={{
+              width: "100%",
+              minWidth: 0,
+              maxWidth: "none",
+              padding: "11px 14px",
+              display: "flex",
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "flex-start",
+              gap: 12,
+              textAlign: "left",
+            }}
             onClick={() => setActiveId(s.id)}
             title={s.name}
           >
