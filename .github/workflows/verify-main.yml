@@ -1,0 +1,31 @@
+name: verify-main
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test -- --runInBand
+      - run: npm run build
+      - name: Verify bundled Lua corpus
+        run: |
+          test -d src/assets/plugins
+          count=$(find src/assets/plugins -maxdepth 1 -type f -name '*.lua' | wc -l)
+          echo "Bundled Lua sources: $count"
+          test "$count" -ge 50
+          test -f src/assets/plugins/freewebnovel.lua
+          test -f src/assets/plugins/piaotia.lua
+          test -f src/assets/plugins/asurascans.lua
