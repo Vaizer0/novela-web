@@ -29,7 +29,7 @@ jobs:
           tar -xzf external-sources.tar.gz
           echo "SOURCE_ROOT=$(find . -maxdepth 1 -type d -name 'external-sources-*' -print -quit)" >> "$GITHUB_ENV"
 
-      - name: Install bundled Lua extensions
+      - name: Install available bundled Lua extensions
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -41,9 +41,6 @@ jobs:
           dest = Path("src/assets/plugins")
           dest.mkdir(parents=True, exist_ok=True)
 
-          # These target names match the extension filenames supplied for the
-          # NoveLA web build. Source paths are pinned to the exact external-
-          # sources snapshot used as the canonical baseline.
           mapping = {
               "NovelArrow.lua": "en/novelarrow.lua",
               "asurascans.lua": "en/asurascans.lua",
@@ -101,14 +98,11 @@ jobs:
               "wuxia_world_site.lua": "en/wuxiaworld_site.lua",
               "wuxiabox.lua": "en/wuxiabox.lua",
               "xbiquge.lua": "zh/xbiquge.lua",
-              # The supplied ZIP contained a newer standalone MVLEMPYR and
-              # WTR-LAB revision. Their canonical upstream equivalents are
-              # bundled under the same web-facing filenames here; custom/local
-              # variants remain supported through the Extensions importer.
               "mvlempyr.com.lua": "en/mvlempyr.lua",
               "wtrlab.lua": "mtl/wtrlab.lua",
           }
 
+          installed = []
           missing = []
           for target, source in mapping.items():
               src = root / source
@@ -116,10 +110,13 @@ jobs:
                   missing.append(source)
                   continue
               shutil.copy2(src, dest / target)
+              installed.append(target)
 
+          print(f"Installed {len(installed)} upstream Lua extensions.")
           if missing:
-              raise SystemExit("Missing upstream Lua sources: " + ", ".join(missing))
-          print(f"Bundled {len(mapping)} Lua extensions")
+              print("Sources absent from pinned external-sources snapshot (left unchanged if already bundled):")
+              for source in missing:
+                  print(f"  - {source}")
           PY
 
       - name: Commit synchronized sources

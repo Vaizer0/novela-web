@@ -12,14 +12,19 @@ export class LuaElement {
 
   constructor(node: Element, baseURI = "") {
     this.node = node;
-    this.baseURI = baseURI || node.ownerDocument?.baseURI || "";
+    // Do NOT inherit DOMParser's document.baseURI. In a web app that value is
+    // the app's GitHub Pages origin, not the novel source. NoveLA's Jsoup
+    // adapter intentionally leaves relative href/src values relative so each
+    // Lua plugin can resolve them against its own baseUrl via url_resolve().
+    this.baseURI = baseURI;
   }
 
   private abs(attr: string): string {
     const raw = this.node.getAttribute(attr) ?? "";
     if (raw === "") return "";
+    if (!this.baseURI) return raw;
     try {
-      return new URL(raw, this.baseURI || undefined).toString();
+      return new URL(raw, this.baseURI).toString();
     } catch {
       return raw;
     }
@@ -71,7 +76,7 @@ export class LuaElement {
 
   select(css: string): LuaElement[] {
     try {
-      return Array.from(this.node.querySelectorAll(css), (n) => new LuaElement(n, this.baseURI));
+      return selectJsoupCompatible(this.node, css).map((n) => new LuaElement(n, this.baseURI));
     } catch {
       return [];
     }
@@ -80,8 +85,6 @@ export class LuaElement {
 
 export function parseHtml(html: string): Document {
   const doc = new DOMParser().parseFromString(html, "text/html");
-  // DOMParser-created documents have a null location/baseURI; keep relative URLs
-  // relative so plugin-side url_resolve handles them.
   return doc;
 }
 
@@ -99,11 +102,34 @@ export function rootFrom(v: unknown): { root: ParentNode; baseURI: string } | nu
   return null;
 }
 
+/**
+ * Browser CSS selectors cover almost all selectors used by the NoveLA sources,
+ * but Jsoup also supports :contains(text), which is not part of native CSS.
+ * Strip that pseudo-class for the browser query, then filter candidates by
+ * their visible text. This also makes selectors like div:has(p:contains(x))
+ * usable because modern browsers natively implement :has().
+ */
+function selectJsoupCompatible(root: ParentNode, css: string): Element[] {
+  const containsValues: string[] = [];
+  const withoutContains = css.replace(/:contains\(\s*(["']?)(.*?)\1\s*\)/g, (_all, _quote, value) => {
+    containsValues.push(String(value));
+    return "";
+  });
+
+  const candidates = Array.from(root.querySelectorAll(withoutContains || "*"));
+  if (containsValues.length === 0) return candidates;
+
+  return candidates.filter((el) => {
+    const text = el.textContent ?? "";
+    return containsValues.every((value) => text.includes(value));
+  });
+}
+
 export function htmlSelect(v: unknown, css: string): LuaElement[] {
   const ctx = rootFrom(v);
   if (!ctx) return [];
   try {
-    return Array.from(ctx.root.querySelectorAll(css), (n) => new LuaElement(n as Element, ctx.baseURI));
+    return selectJsoupCompatible(ctx.root, css).map((n) => new LuaElement(n, ctx.baseURI));
   } catch {
     return [];
   }
@@ -129,7 +155,7 @@ export function htmlRemove(v: unknown, ...selectors: string[]): string {
     for (const sel of selectors) {
       if (!sel || sel.trim() === "") continue;
       try {
-        for (const n of v.node.querySelectorAll(sel)) n.remove();
+        for (const n of selectJsoupCompatible(v.node, sel)) n.remove();
       } catch {
         /* invalid selector → skip like Android catches */
       }
@@ -140,7 +166,7 @@ export function htmlRemove(v: unknown, ...selectors: string[]): string {
   for (const sel of selectors) {
     if (!sel || sel.trim() === "") continue;
     try {
-      for (const n of doc.querySelectorAll(sel)) n.remove();
+      for (const n of selectJsoupCompatible(doc, sel)) n.remove();
     } catch {
       /* skip */
     }

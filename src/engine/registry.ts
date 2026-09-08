@@ -1,5 +1,5 @@
 import { LuaSource } from "./sourceAdapter";
-import { defaultFetcher } from "./bridge/http";
+import { defaultFetcher, clearSourceUserAgent, presetUserAgent, setSourceUserAgent } from "./bridge/http";
 import { db, type CustomPlugin } from "../db/db";
 
 /**
@@ -48,6 +48,7 @@ export function metaFromCode(code: string, fileName: string): SourceMeta {
 
 const ENABLED_KEY = "enabledSources";
 const CUSTOM_IMPORT_MIGRATION_KEY = "customLuaSourcesEnabledV1";
+const BUNDLED_IMPORT_MIGRATION_KEY = "bundledLuaSourcesEnabledV1";
 
 /** null = everything enabled (fresh install default). */
 export function getEnabledSources(): Set<string> | null {
@@ -96,16 +97,12 @@ function invalidateCustom(): void {
   customCache = null;
 }
 
-/** All sources (bundled + custom), sorted by name. Custom entries override bundled entries by id. */
 export async function listSources(): Promise<SourceEntry[]> {
   const [bundled, custom] = await Promise.all([bundledEntries(), customEntries()]);
   const byId = new Map<string, SourceEntry>();
   for (const entry of bundled) byId.set(entry.id, entry);
   for (const entry of custom) byId.set(entry.id, entry);
 
-  // Older builds could import custom Lua files while leaving them absent from
-  // an existing explicit enabled-source set. Perform a one-time migration so
-  // those already-imported sources become visible in Browse after upgrading.
   if (localStorage.getItem(CUSTOM_IMPORT_MIGRATION_KEY) !== "1") {
     const enabled = getEnabledSources();
     if (enabled !== null && custom.length > 0) {
@@ -115,19 +112,44 @@ export async function listSources(): Promise<SourceEntry[]> {
     localStorage.setItem(CUSTOM_IMPORT_MIGRATION_KEY, "1");
   }
 
+  if (localStorage.getItem(BUNDLED_IMPORT_MIGRATION_KEY) !== "1") {
+    const enabled = getEnabledSources();
+    if (enabled !== null && bundled.length > 0) {
+      for (const entry of bundled) enabled.add(entry.id);
+      setEnabledSources(enabled);
+    }
+    localStorage.setItem(BUNDLED_IMPORT_MIGRATION_KEY, "1");
+  }
+
   return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 const runtimeCache = new Map<string, LuaSource>();
 
-/** LuaSource for a registry entry; one runtime per source id, cached. */
+async function registerUserAgentPreset(src: LuaSource): Promise<void> {
+  clearSourceUserAgent(src.meta.id);
+  try {
+    if (typeof src.runtime.lua.global.get("getUserAgentPreset") !== "function") return;
+    await src.runtime.lua.doString("__novela_ua_preset = getUserAgentPreset()");
+    const value = src.runtime.lua.global.get("__novela_ua_preset");
+    if (typeof value !== "string") return;
+    const ua = presetUserAgent(value);
+    if (ua) setSourceUserAgent(src.meta.id, ua);
+  } catch {
+    /* Presets are optional; normal UA remains active. */
+  }
+}
+
 export async function getSourceRuntime(entry: SourceEntry): Promise<LuaSource> {
   const cached = runtimeCache.get(entry.id);
   if (cached) return cached;
   const src = await LuaSource.load(await entry.getCode(), `${entry.id}.lua`, defaultFetcher);
 
-  // Reader/export code uses this direct page fetch for chapter HTML. Do not
-  // allow a transport failure to be mistaken for an empty chapter and cached.
+  // Compatibility helpers used by portions of the upstream Lua collection.
+  src.runtime.lua.global.set("string_lower", (value: string) => String(value ?? "").toLowerCase());
+  src.runtime.lua.global.set("string_upper", (value: string) => String(value ?? "").toUpperCase());
+  await registerUserAgentPreset(src);
+
   const fetchPage = src.fetchPage.bind(src);
   src.fetchPage = async (url: string) => {
     const env = await fetchPage(url);
@@ -147,6 +169,7 @@ export async function getSourceRuntime(entry: SourceEntry): Promise<LuaSource> {
 
 export function dropRuntime(id: string): void {
   runtimeCache.delete(id);
+  clearSourceUserAgent(id);
 }
 
 function enableNewSourceIds(ids: string[]): void {
