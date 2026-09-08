@@ -49,7 +49,7 @@ export default function Library() {
             <p className="muted">{continueBook.progress?.chapterUrl || "Resume where you left off"}</p>
             <div className="progress-track"><span style={{ width: `${Math.round((continueBook.progress?.position ?? 0) * 100)}%` }} /></div>
             <div className="continue-meta"><span>{Math.round((continueBook.progress?.position ?? 0) * 100)}% complete</span><span>›</span></div>
-            <a className="button button-primary button-small" href={`/reader?source=${encodeURIComponent(continueBook.book.sourceId)}&bookUrl=${encodeURIComponent(continueBook.book.url)}&chapterUrl=${encodeURIComponent(continueBook.progress?.chapterUrl ?? "")}`}>Continue reading</a>
+            <NavLink className="button button-primary button-small" to={`/reader?source=${encodeURIComponent(continueBook.book.sourceId)}&bookUrl=${encodeURIComponent(continueBook.book.url)}&chapterUrl=${encodeURIComponent(continueBook.progress?.chapterUrl ?? "")}`}>Continue reading</NavLink>
           </div>
         </section>
       )}
@@ -69,7 +69,7 @@ export default function Library() {
               const p = progress.get(b.url);
               const percent = p ? Math.round(p.position * 100) : 0;
               return (
-                <a key={b.url} className="book-card" href={`/novel?source=${encodeURIComponent(b.sourceId)}&url=${encodeURIComponent(b.url)}`}>
+                <NavLink key={b.url} className="book-card" to={`/novel?source=${encodeURIComponent(b.sourceId)}&url=${encodeURIComponent(b.url)}`}>
                   <div className="book-cover-wrap">
                     <img src={rawImg(b.cover)} alt="" loading="lazy" />
                     {percent > 0 && <span className="progress-badge">{percent}%</span>}
@@ -79,7 +79,7 @@ export default function Library() {
                     <span className="book-subtitle">{b.contentType === "manga" ? "Manga" : "Web novel"}</span>
                     {percent > 0 && <div className="mini-progress"><span style={{ width: `${percent}%` }} /></div>}
                   </div>
-                </a>
+                </NavLink>
               );
             })}
           </div>
