@@ -1,5 +1,5 @@
 import { LuaSource } from "./sourceAdapter";
-import { defaultFetcher } from "./bridge/http";
+import { defaultFetcher, clearSourceUserAgent, presetUserAgent, setSourceUserAgent } from "./bridge/http";
 import { db, type CustomPlugin } from "../db/db";
 
 /**
@@ -104,9 +104,6 @@ export async function listSources(): Promise<SourceEntry[]> {
   for (const entry of bundled) byId.set(entry.id, entry);
   for (const entry of custom) byId.set(entry.id, entry);
 
-  // Older builds could import custom Lua files while leaving them absent from
-  // an existing explicit enabled-source set. Perform a one-time migration so
-  // those already-imported sources become visible in Browse after upgrading.
   if (localStorage.getItem(CUSTOM_IMPORT_MIGRATION_KEY) !== "1") {
     const enabled = getEnabledSources();
     if (enabled !== null && custom.length > 0) {
@@ -116,11 +113,8 @@ export async function listSources(): Promise<SourceEntry[]> {
     localStorage.setItem(CUSTOM_IMPORT_MIGRATION_KEY, "1");
   }
 
-  // Bundled Lua sources are part of the application, not optional imports.
-  // On the first build that ships the bundled collection, upgrade any older
-  // explicit source list by enabling every currently bundled source once.
-  // This prevents an old empty/stale enabledSources value from making Browse
-  // appear to have no working plugins after an app upgrade.
+  // Bundled extensions are application features. Upgrade older explicit source
+  // lists once so a stale/empty list cannot hide the bundled Lua collection.
   if (localStorage.getItem(BUNDLED_IMPORT_MIGRATION_KEY) !== "1") {
     const enabled = getEnabledSources();
     if (enabled !== null && bundled.length > 0) {
@@ -135,17 +129,36 @@ export async function listSources(): Promise<SourceEntry[]> {
 
 const runtimeCache = new Map<string, LuaSource>();
 
+function registerUserAgentPreset(src: LuaSource): void {
+  clearSourceUserAgent(src.meta.id);
+  try {
+    const hasFn = src.runtime.lua.global.get("getUserAgentPreset");
+    if (typeof hasFn !== "function") return;
+    // The reference NoveLA calls this synchronously during source setup. Keep
+    // the same contract: the function only returns a short preset name/raw UA.
+    src.runtime.lua.doString("__novela_ua_preset = getUserAgentPreset()").then(() => {
+      const value = src.runtime.lua.global.get("__novela_ua_preset");
+      if (typeof value !== "string") return;
+      const ua = presetUserAgent(value);
+      if (ua) setSourceUserAgent(src.meta.id, ua);
+    }).catch(() => {
+      /* Presets are optional; normal UA remains active. */
+    });
+  } catch {
+    /* optional */
+  }
+}
+
 /** LuaSource for a registry entry; one runtime per source id, cached. */
 export async function getSourceRuntime(entry: SourceEntry): Promise<LuaSource> {
   const cached = runtimeCache.get(entry.id);
   if (cached) return cached;
   const src = await LuaSource.load(await entry.getCode(), `${entry.id}.lua`, defaultFetcher);
 
-  // A few upstream Lua extensions use small compatibility helpers that are
-  // provided by newer NoveLA builds but are absent from the base Lua standard
-  // library (for example global string_lower()).
+  // Compatibility helpers used by portions of the upstream Lua collection.
   src.runtime.lua.global.set("string_lower", (value: string) => String(value ?? "").toLowerCase());
   src.runtime.lua.global.set("string_upper", (value: string) => String(value ?? "").toUpperCase());
+  registerUserAgentPreset(src);
 
   // Reader/export code uses this direct page fetch for chapter HTML. Do not
   // allow a transport failure to be mistaken for an empty chapter and cached.
@@ -168,6 +181,7 @@ export async function getSourceRuntime(entry: SourceEntry): Promise<LuaSource> {
 
 export function dropRuntime(id: string): void {
   runtimeCache.delete(id);
+  clearSourceUserAgent(id);
 }
 
 function enableNewSourceIds(ids: string[]): void {
