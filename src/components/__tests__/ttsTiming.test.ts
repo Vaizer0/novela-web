@@ -1,9 +1,9 @@
 // @vitest-environment node
-// TTS highlight accuracy primitives: sentence chunking keeps utterances short
-// and offsets round-trip to the original paragraph; pace calibration EMA-blends
-// measured ms-per-word toward the engine's real cadence.
+// TTS highlight accuracy primitives: sentence chunking preserves offsets,
+// boundary indices resolve to exact words, and pace calibration adapts to the
+// real speech cadence.
 import { describe, it, expect } from "vitest";
-import { splitChunks, calibratePace } from "../TtsPlayer";
+import { boundaryToWordIndex, splitChunks, calibratePace } from "../TtsPlayer";
 
 describe("splitChunks", () => {
   it("splits sentences with correct offsets", () => {
@@ -16,17 +16,14 @@ describe("splitChunks", () => {
     const text = "First sentence. Second one!\nNew line? Tail without punctuation";
     const chunks = splitChunks(text);
     expect(chunks.map((c) => c.text).join("")).toBe(text);
-    for (const c of chunks) {
-      expect(text.slice(c.offset, c.offset + c.text.length)).toBe(c.text);
-    }
+    for (const c of chunks) expect(text.slice(c.offset, c.offset + c.text.length)).toBe(c.text);
   });
 
   it("caps chunk length at 300 chars by splitting at spaces", () => {
-    const text = "word ".repeat(120).trimEnd(); // 600 chars, no sentence ends
+    const text = "word ".repeat(120).trimEnd();
     const chunks = splitChunks(text);
     expect(chunks.length).toBeGreaterThan(1);
     for (const c of chunks) expect(c.text.length).toBeLessThanOrEqual(300);
-    // no word torn apart: every split lands on a space boundary
     expect(chunks.map((c) => c.text).join("")).toBe(text);
     for (let i = 1; i < chunks.length; i++) {
       expect(chunks[i].text.startsWith(" ") || chunks[i - 1].text.endsWith(" ")).toBe(true);
@@ -38,12 +35,28 @@ describe("splitChunks", () => {
   });
 });
 
+describe("boundaryToWordIndex", () => {
+  it("maps exact boundary offsets to the correct word", () => {
+    const text = "Hello brave new world";
+    expect(boundaryToWordIndex(text, 0)).toBe(0);
+    expect(boundaryToWordIndex(text, 2)).toBe(0);
+    expect(boundaryToWordIndex(text, 6)).toBe(1);
+    expect(boundaryToWordIndex(text, 12)).toBe(2);
+    expect(boundaryToWordIndex(text, 16)).toBe(3);
+  });
+
+  it("never returns an out-of-range word index", () => {
+    const text = "One two three";
+    expect(boundaryToWordIndex(text, -5)).toBe(0);
+    expect(boundaryToWordIndex(text, 100)).toBe(2);
+  });
+});
+
 describe("calibratePace", () => {
-  it("blends measured pace into the estimate (0.6/0.4 EMA)", () => {
-    // 5 words in 2000ms -> actual 400ms/word; prev 363.6 (60000/165)
+  it("blends measured pace into the estimate", () => {
     const prev = 60000 / 165;
     const next = calibratePace(prev, 2000, 5);
-    expect(next).toBeCloseTo(prev * 0.6 + 400 * 0.4, 10);
+    expect(next).toBeCloseTo(prev * 0.65 + 400 * 0.35, 10);
   });
 
   it("ignores samples shorter than 500ms", () => {
@@ -56,7 +69,7 @@ describe("calibratePace", () => {
 
   it("moves toward the measured cadence after repeated samples", () => {
     let pace = 60000 / 165;
-    for (let i = 0; i < 20; i++) pace = calibratePace(pace, 1000, 2); // real: 500ms/word
+    for (let i = 0; i < 20; i++) pace = calibratePace(pace, 1000, 2);
     expect(pace).toBeGreaterThan(490);
     expect(pace).toBeLessThan(510);
   });
