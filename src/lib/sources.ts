@@ -2,12 +2,20 @@ import { getEnabledSources, getSourceRuntime, listSources, type SourceEntry } fr
 import { rawImageUrl } from "./api";
 
 export { getSourceRuntime };
-/** Enabled registry entries (all bundled+custom when no explicit set stored). */
+
+/**
+ * Sources available to Browse.
+ *
+ * Bundled Lua extensions are part of the web application and must never be
+ * hidden by an old/stale localStorage `enabledSources` list from a previous
+ * build. Custom/user-installed sources still respect the explicit enabled set.
+ */
 export async function getEnabledEntries(): Promise<SourceEntry[]> {
   const all = await listSources();
   const enabled = getEnabledSources();
   if (enabled === null) return all;
-  return all.filter((s) => enabled.has(s.id));
+
+  return all.filter((s) => s.bundled || enabled.has(s.id));
 }
 
 export async function findEntry(id: string): Promise<SourceEntry | undefined> {
