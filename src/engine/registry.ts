@@ -29,7 +29,7 @@ const pluginModules = import.meta.glob("../assets/plugins/*.lua", {
 }) as Record<string, () => Promise<string>>;
 
 function headerField(code: string, key: string): string {
-  const m = code.match(new RegExp(`^\\s*${key}\\s*=\\s*"([^"]*)"`, "m"));
+  const m = code.match(new RegExp(`^\\s*${key}\\s*=\\s*\"([^\"]*)\"`, "m"));
   return m?.[1] ?? "";
 }
 
@@ -95,10 +95,13 @@ function invalidateCustom(): void {
   customCache = null;
 }
 
-/** All sources (bundled + custom), sorted by name. */
+/** All sources (bundled + custom), sorted by name. Custom entries override bundled entries by id. */
 export async function listSources(): Promise<SourceEntry[]> {
   const [bundled, custom] = await Promise.all([bundledEntries(), customEntries()]);
-  return [...bundled, ...custom].sort((a, b) => a.name.localeCompare(b.name));
+  const byId = new Map<string, SourceEntry>();
+  for (const entry of bundled) byId.set(entry.id, entry);
+  for (const entry of custom) byId.set(entry.id, entry);
+  return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 const runtimeCache = new Map<string, LuaSource>();
@@ -123,6 +126,19 @@ export async function installCustomPlugin(name: string, code: string): Promise<C
   dropRuntime(record.id);
   invalidateCustom();
   return record;
+}
+
+export async function installCustomPlugins(plugins: Array<{ name: string; code: string }>): Promise<CustomPlugin[]> {
+  const records: CustomPlugin[] = [];
+  for (const plugin of plugins) {
+    const meta = metaFromCode(plugin.code, plugin.name);
+    const record: CustomPlugin = { id: meta.id, name: plugin.name, code: plugin.code, addedAt: Date.now() };
+    await db.customPlugins.put(record);
+    dropRuntime(record.id);
+    records.push(record);
+  }
+  invalidateCustom();
+  return records;
 }
 
 export async function installCustomPluginFromUrl(url: string): Promise<CustomPlugin> {
