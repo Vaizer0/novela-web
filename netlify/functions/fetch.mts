@@ -6,6 +6,13 @@ const MAX_BYTES = 8 * 1024 * 1024;
 const DEFAULT_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Max-Age": "86400",
+};
+
 type FetchBody = {
   url?: string;
   method?: string;
@@ -14,10 +21,14 @@ type FetchBody = {
   charset?: string;
 };
 
+function withCors(init: ResponseInit = {}): ResponseInit {
+  return { ...init, headers: { ...CORS_HEADERS, ...(init.headers ?? {}) } };
+}
+
 function fail(body = "", message?: string) {
   return Response.json(
     { success: false, code: -1, body, headers: {}, ...(message ? { error: message } : {}) },
-    { status: 200 },
+    withCors({ status: 200 }),
   );
 }
 
@@ -117,26 +128,29 @@ async function proxyFetch(req: FetchBody): Promise<Response> {
     } catch {
       text = new TextDecoder("utf-8", { fatal: false }).decode(capped);
     }
-    return Response.json({
-      success: res.ok,
-      body: text,
-      code: res.status,
-      headers: lowerHeaders(res.headers),
-    });
+    return Response.json(
+      {
+        success: res.ok,
+        body: text,
+        code: res.status,
+        headers: lowerHeaders(res.headers),
+      },
+      withCors({ status: 200 }),
+    );
   } catch (e) {
     return fail("", e instanceof Error ? e.message : String(e));
   }
 }
 
 async function proxyRaw(urlParam: string | null): Promise<Response> {
-  if (!urlParam) return new Response("missing url", { status: 400 });
-  if (!(await ssrfSafe(urlParam))) return new Response("SSRF blocked", { status: 403 });
+  if (!urlParam) return new Response("missing url", withCors({ status: 400 }));
+  if (!(await ssrfSafe(urlParam))) return new Response("SSRF blocked", withCors({ status: 403 }));
   try {
     const res = await fetch(urlParam, {
       headers: { "User-Agent": DEFAULT_UA, Accept: "*/*" },
       redirect: "follow",
     });
-    const h = new Headers();
+    const h = new Headers(CORS_HEADERS);
     const ct = res.headers.get("content-type");
     if (ct) h.set("content-type", ct);
     const cl = res.headers.get("content-length");
@@ -149,11 +163,14 @@ async function proxyRaw(urlParam: string | null): Promise<Response> {
     if (e && typeof e === "object" && "cause" in e && e.cause instanceof Error) {
       msg += `: ${e.cause.message}`;
     }
-    return new Response(`fetch failed: ${msg}`, { status: 502 });
+    return new Response(`fetch failed: ${msg}`, withCors({ status: 502 }));
   }
 }
 
 export default async (req: Request, _context: Context): Promise<Response> => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, withCors({ status: 204 }));
+  }
   const u = new URL(req.url);
   if (u.searchParams.get("mode") === "raw") {
     return proxyRaw(u.searchParams.get("url"));
