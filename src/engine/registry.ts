@@ -29,12 +29,12 @@ const pluginModules = import.meta.glob("../assets/plugins/*.lua", {
 }) as Record<string, () => Promise<string>>;
 
 function headerField(code: string, key: string): string {
-  const m = code.match(new RegExp(`^\\s*${key}\\s*=\\s*\"([^\"]*)\"`, "m"));
+  const m = code.match(new RegExp(`^\\s*${key}\\s*=\\s*\\"([^\\"]*)\\"`, "m"));
   return m?.[1] ?? "";
 }
 
 export function metaFromCode(code: string, fileName: string): SourceMeta {
-  const id = headerField(code, "id") || `lua_${fileName.replace(/\.lua$/i, "")}`;
+  const id = headerField(code, "id") || `lua_${fileName.replace(/\\.lua$/i, "")}`;
   return {
     id,
     name: headerField(code, "name") || id,
@@ -70,25 +70,36 @@ let customCache: SourceEntry[] | null = null;
 
 async function bundledEntries(): Promise<SourceEntry[]> {
   if (!bundledCache) {
-    bundledCache = await Promise.all(
+    const entries = await Promise.all(
       Object.entries(pluginModules).map(async ([path, load]) => {
         const fileName = path.split("/").pop() ?? path;
-        const code = await load();
-        return { ...metaFromCode(code, fileName), bundled: true, getCode: () => Promise.resolve(code) };
+        try {
+          const code = await load();
+          return { ...metaFromCode(code, fileName), bundled: true, getCode: () => Promise.resolve(code) } as SourceEntry;
+        } catch (error) {
+          console.error(`Failed to load bundled Lua source ${fileName}`, error);
+          return null;
+        }
       }),
     );
+    bundledCache = entries.filter((entry): entry is SourceEntry => entry !== null);
   }
   return bundledCache;
 }
 
 async function customEntries(): Promise<SourceEntry[]> {
   if (!customCache) {
-    const plugins = await db.customPlugins.toArray();
-    customCache = plugins.map((p) => ({
-      ...metaFromCode(p.code, p.name),
-      bundled: false,
-      getCode: () => Promise.resolve(p.code),
-    }));
+    try {
+      const plugins = await db.customPlugins.toArray();
+      customCache = plugins.map((p) => ({
+        ...metaFromCode(p.code, p.name),
+        bundled: false,
+        getCode: () => Promise.resolve(p.code),
+      }));
+    } catch (error) {
+      console.error("Failed to load custom Lua sources", error);
+      customCache = [];
+    }
   }
   return customCache;
 }
@@ -212,7 +223,7 @@ export async function installCustomPlugins(plugins: Array<{ name: string; code: 
 export async function installCustomPluginFromUrl(url: string): Promise<CustomPlugin> {
   const res = await defaultFetcher(url, {});
   if (!res.success || !res.body) throw new Error(`fetch failed (code ${res.code})`);
-  const fileName = url.split("/").pop()?.replace(/\.lua$/i, "") ?? "custom";
+  const fileName = url.split("/").pop()?.replace(/\\.lua$/i, "") ?? "custom";
   return installCustomPlugin(fileName, res.body);
 }
 
