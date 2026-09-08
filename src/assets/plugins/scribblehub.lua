@@ -1,7 +1,7 @@
 -- ── Метаданные ────────────────────────────────────────────────────────────────
 id       = "scribblehub"
 name     = "ScribbleHub"
-version  = "1.0.2"
+version  = "1.0.5"
 baseUrl  = "https://www.scribblehub.com/"
 language = "en"
 icon     = "https://raw.githubusercontent.com/HnDK0/external-sources/main/icons/scribblehub.png"
@@ -182,6 +182,56 @@ function getBookGenres(bookUrl)
     if label ~= "" then table.insert(genres, label) end
   end
   return genres
+end
+
+-- ── Статус и дата обновления ──────────────────────────────────────────────────
+
+-- Статус и дата живут в ОДНОМ <span>:
+--   <span>Ongoing - Updated <span title="Last updated: Aug 20, 2026 01:05 AM">Aug 20, 2026</span></span>
+-- Внешний <span> (сосед span.rnd_stats) содержит «Ongoing - Updated Aug 20, 2026» —
+-- целиком это мусор. Статус = часть до « - Updated», дата = внутренний <span>.
+
+-- Нормализация абсолютной даты «Mon D, YYYY» / «Mon D, YYYY H:MM AM» → YYYY-MM-DD.
+-- Нет/не распозналось → nil.
+local monthNames = {
+  Jan = 1, Feb = 2, Mar = 3, Apr = 4, May = 5, Jun = 6,
+  Jul = 7, Aug = 8, Sep = 9, Oct = 10, Nov = 11, Dec = 12,
+}
+
+local function normalizeDate(raw)
+  if not raw or raw == "" then return nil end
+  local mon, d, y = string.match(raw, "(%a%a%a)%s+(%d+),%s+(%d%d%d%d)")
+  if not mon then return nil end
+  local m = monthNames[mon]
+  if not m then return nil end
+  return string.format("%04d-%02d-%02d", tonumber(y), m, tonumber(d))
+end
+
+-- Статус книги: берём только слово(а) до « - Updated», иначе nil.
+function getBookStatus(bookUrl)
+  local r = http_get(bookUrl)
+  if not r.success then return nil end
+  local el = html_select_first(r.body, "span.rnd_stats + span")
+  if not el then return nil end
+  local txt = string_clean(el.text)
+  local status = string.match(txt, "^(.-)%s*%-%s*Updated")
+  if not status then return nil end
+  return string_clean(status)
+end
+
+-- Дата обновления живёт в том же внешнем <span>, что и статус (сосед
+-- span.rnd_stats): его текст — «Ongoing - Updated Aug 20, 2026» (дата
+-- внутреннего <span> конкатенируется в .text). Атрибут title с префиксом
+-- «Last updated:» движок через селектор [title^=...] не выбирает, поэтому
+-- берём дату из текста внешнего span регуляркой и нормализуем в YYYY-MM-DD.
+function getBookLastUpdate(bookUrl)
+  local r = http_get(bookUrl)
+  if not r.success then return nil end
+  local el = html_select_first(r.body, "span.rnd_stats + span")
+  if not el then return nil end
+  local raw = string.match(string_clean(el.text),
+                            "Updated%s+(%a%a%a%s+%d+,%s+%d%d%d%d)")
+  return normalizeDate(raw)
 end
 
 -- ── Список фильтров ───────────────────────────────────────────────────────────

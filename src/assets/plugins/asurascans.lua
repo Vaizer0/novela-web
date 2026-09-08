@@ -1,9 +1,11 @@
 id       = "asurascans"
 name     = "Asura Scans"
+-- Version: 1.7.1
 version  = "1.7.1"
 baseUrl  = "https://asurascans.com"
 language = "en"
-icon     = "https://asurascans.com/images/logo.webp"
+icon     = "https://raw.githubusercontent.com/HnDK0/external-sources/main/icons/asurascans.webp"
+content_type = "manga"
 
 -- Manga/manhwa source: chapters are image pages. getPageList returns the
 -- ORDERED ORIGINAL CDN URLs (raw, un-rewritten) — the app renders them
@@ -41,13 +43,23 @@ local function fetch(url)
     return r.body
 end
 
+-- Сессионный кэш страницы книги: движок вызывает 4+ detail-функции
+-- параллельно, но в рамках одного вызова повторный fetch одного и того же
+-- bookUrl не нужен.
+local _pageCache = {}
+
+local function fetchBookPage(url)
+    if _pageCache[url] then return _pageCache[url] end
+    local body = fetch(url)
+    if body then _pageCache[url] = body end
+    return body
+end
+
 local function cleanChapterTitle(text)
     local t = string_clean(text)
     -- Strip relative-time suffixes: "Chapter 206 16 hours ago" -> "Chapter 206"
     t = regex_replace(t, "\\s+\\d+\\s+(hour|day|week|month|year)s?\\s+ago\\s*$", "")
     t = regex_replace(t, "\\s+last\\s+(week|month|year)\\s*$", "")
-    -- "Just now" (capitalized by the site) -> plain title
-    t = regex_replace(t, "\\s*[Jj]ust\\s+[Nn]ow\\s*$", "")
     -- Strip absolute-date suffixes: "Chapter 201 S2-END Mar 7, 2026" -> "Chapter 201 S2-END"
     t = regex_replace(t, "\\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\\s+\\d+,\\s*\\d{4}\\s*$", "")
     t = regex_replace(t, "\\s+(yesterday|today)\\s*$", "")
@@ -68,7 +80,6 @@ local function parseChapterDate(text)
                        month = 30 * 86400, year = 365 * 86400 }
         return now - tonumber(n) * (mult[unit] or 86400)
     end
-    if string.match(t, "just%s+now") then return now end
     if string.match(t, "today") then return now end
     if string.match(t, "yesterday") then return now - 86400 end
     if string.match(t, "last%s+week") then return now - 7 * 86400 end
@@ -152,14 +163,14 @@ function getCatalogSearch(index, query)
 end
 
 function getBookTitle(bookUrl)
-    local body = fetch(bookUrl)
+    local body = fetchBookPage(bookUrl)
     if not body then return nil end
     local h1 = html_select_first(body, "h1")
     return h1 and string_clean(h1.text) or nil
 end
 
 function getBookCoverImageUrl(bookUrl)
-    local body = fetch(bookUrl)
+    local body = fetchBookPage(bookUrl)
     if not body then return nil end
     local src = html_attr(body, "img[src*='asura-images/covers/']", "src")
     if src == "" then src = html_attr(body, "meta[property='og:image']", "content") end
@@ -167,7 +178,7 @@ function getBookCoverImageUrl(bookUrl)
 end
 
 function getBookDescription(bookUrl)
-    local body = fetch(bookUrl)
+    local body = fetchBookPage(bookUrl)
     if not body then return nil end
     local el = html_select_first(body,
         ".summary__content, .summary, .description, .synopsis, .about, .series-description")
@@ -181,7 +192,7 @@ function getBookDescription(bookUrl)
 end
 
 function getBookGenres(bookUrl)
-    local body = fetch(bookUrl)
+    local body = fetchBookPage(bookUrl)
     if not body then return {} end
     local genres = {}
     for _, a in ipairs(html_select(body, "a[href*='genres=']")) do
@@ -195,7 +206,7 @@ end
 -- шкале bestRating ("9.6"/"10"). Формат "9.6/10" — рейтинговый парсер
 -- приложения нормализует её в 5-балльную ("4.8"); голое "9.6" он бы отклонил.
 function getBookRating(bookUrl)
-    local body = fetch(bookUrl)
+    local body = fetchBookPage(bookUrl)
     if not body then return nil end
     for _, script in ipairs(html_select(body, "script[type='application/ld+json']")) do
         local raw = script.html
@@ -209,6 +220,41 @@ function getBookRating(bookUrl)
                     if best ~= nil then s = s .. "/" .. tostring(best) end
                     return s
                 end
+            end
+        end
+    end
+    return nil
+end
+
+-- ── Status / Last update ──
+
+-- Статус (ongoing / completed / …) — текст span.capitalize в блоке "Status"
+-- на странице книги (div.flex.gap-3.pt-4). Значения не маппятся, отдаём как есть.
+function getBookStatus(bookUrl)
+    local body = fetchBookPage(bookUrl)
+    if not body then return nil end
+    local el = html_select_first(body, "div.flex.gap-3.pt-4 span.capitalize")
+    if el then
+        local t = string_clean(el.text)
+        if t ~= "" then return t end
+    end
+    return nil
+end
+
+-- Дата обновления страницы из JSON-LD ComicSeries (поле dateModified, ISO-строка).
+-- meta[property='article:modified_time'] на сайте отсутствует (проверено на
+-- реальной странице), поэтому берём dateModified из JSON-LD. ВНИМАНИЕ: это
+-- время модификации СТРАНИЦЫ, а не время выхода последней главы.
+function getBookLastUpdate(bookUrl)
+    local body = fetchBookPage(bookUrl)
+    if not body then return nil end
+    for _, script in ipairs(html_select(body, "script[type='application/ld+json']")) do
+        local raw = script.html
+        if raw and string.find(raw, "dateModified", 1, true) then
+            local ok, data = pcall(json_parse, raw)
+            if ok and data and data.dateModified then
+                local m = regex_match(tostring(data.dateModified), "(\\d\\d\\d\\d-\\d\\d-\\d\\d)")
+                if m and m[1] then return m[1] end
             end
         end
     end

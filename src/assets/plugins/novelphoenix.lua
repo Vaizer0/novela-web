@@ -1,9 +1,10 @@
 -- Novel Phoenix plugin for NovaLa
 -- Source: https://novelphoenix.com/
--- Version: 1.1.0
-id = "local_novelphoenix_5gwiO"
+-- Version: 1.0.8
+
+id       = "novelphoenix"
 name     = "Novel Phoenix"
-version  = "1.1.0"
+version  = "1.0.8"
 baseUrl  = "https://novelphoenix.com"
 language = "en"
 icon     = "https://novelphoenix.com/logo.png"
@@ -26,6 +27,41 @@ local function applyStandardContentTransforms(text)
     text = regex_replace(text, "(?im)^\\s*(Translator|Editor|Proofreader|Read\\s+(at|on|latest))[:\\s][^\\n\\r]{0,70}(\\r?\\n|$)", "")
     text = string_trim(text)
     return text
+end
+
+-- Кэш страницы книги: движок вызывает функции деталей параллельно,
+-- кэш убирает дублирующиеся http_get на один и тот же bookUrl.
+local _pageCache = {}
+
+local function fetchBookPage(url)
+    if _pageCache[url] then return _pageCache[url] end
+    local r = http_get(url)
+    if r.success then
+        _pageCache[url] = r.body
+        return r.body
+    end
+    return nil
+end
+
+-- Приводит относительную дату сайта к YYYY-MM-DD. Сайт отдаёт только
+-- строки вида "Updated 8 hours ago", "Updated 3 days ago", "Updated 2 years ago"
+-- (проверено на живых страницах); месяцы и годы — приблизительно (30/365 дней).
+-- Не распозналось → nil.
+local function normalizeUpdateDate(raw)
+    if not raw or raw == "" then return nil end
+    local n, unit = string.match(raw, "Updated%s+(%d+)%s+(%w+)%s+ago")
+    if not n then return nil end
+    local mult = {
+        minute = 60, minutes = 60,
+        hour = 3600, hours = 3600,
+        day = 86400, days = 86400,
+        week = 7 * 86400, weeks = 7 * 86400,
+        month = 30 * 86400, months = 30 * 86400,
+        year = 365 * 86400, years = 365 * 86400,
+    }
+    local secs = mult[unit]
+    if not secs then return nil end
+    return os.date("%Y-%m-%d", os.time() - n * secs)
 end
 
 -- ── Catalog ─────────────────────────────────────────────────────────────
@@ -111,24 +147,75 @@ function getBookDescription(bookUrl)
     return el and string_trim(el.text) or nil
 end
 
--- ── Chapter List (HTML pagination with dates) ─────────────────────────
+-- ── Chapter List (AJAX) ────────────────────────────────────────────────
 
--- Parse "YYYY-MM-DD HH:MM:SS" → epoch seconds.
-local function parseDateTime(s)
-    if not s or s == "" then return nil end
-    local y, m, d, h, mi, sec = s:match("(%d+)%-(%d+)%-(%d+) (%d+):(%d+):(%d+)")
-    if not y then return nil end
-    local ok, ts = pcall(os.time, {
-        year = tonumber(y), month = tonumber(m), day = tonumber(d),
-        hour = tonumber(h), min = tonumber(mi), sec = tonumber(sec)
-    })
-    return ok and ts or nil
+function getChapterList(bookUrl)
+    -- Step 1: get post_id from the novel page
+    local r = http_get(bookUrl)
+    if not r.success then return {} end
+
+    local postId = html_attr(r.body, "#novel-report", "report-post_id")
+    if not postId or postId == "" then return {} end
+
+    -- Step 2: one AJAX request – all chapters at once
+    local ajaxUrl = baseUrl .. "/ajax/listChapterDataAjax"
+    local params = "draw=1"
+        .. "&columns%5B0%5D%5Bdata%5D=n_sort"
+        .. "&columns%5B0%5D%5Bname%5D=cmm_posts_detail.n_sort"
+        .. "&columns%5B0%5D%5Bsearchable%5D=true"
+        .. "&columns%5B0%5D%5Borderable%5D=true"
+        .. "&columns%5B0%5D%5Bsearch%5D%5Bvalue%5D="
+        .. "&columns%5B0%5D%5Bsearch%5D%5Bregex%5D=false"
+        .. "&columns%5B1%5D%5Bdata%5D=bookmark_created_at"
+        .. "&columns%5B1%5D%5Bname%5D=bookmark_chapters.created_at"
+        .. "&columns%5B1%5D%5Bsearchable%5D=false"
+        .. "&columns%5B1%5D%5Borderable%5D=true"
+        .. "&columns%5B1%5D%5Bsearch%5D%5Bvalue%5D="
+        .. "&columns%5B1%5D%5Bsearch%5D%5Bregex%5D=false"
+        .. "&order%5B0%5D%5Bcolumn%5D=0"
+        .. "&order%5B0%5D%5Bdir%5D=asc"
+        .. "&order%5B0%5D%5Bname%5D=cmm_posts_detail.n_sort"
+        .. "&start=0"
+        .. "&length=-1"
+        .. "&search%5Bvalue%5D="
+        .. "&search%5Bregex%5D=false"
+        .. "&post_id=" .. postId
+        .. "&only_bookmark=false"
+
+    local bookSlug = bookUrl:match("/([^/]+)$")
+    local ar = http_get(ajaxUrl .. "?" .. params)
+    if not ar.success then return {} end
+
+    -- Step 3: parse JSON
+    local json = json_parse(ar.body)
+    if not json or not json.data then return {} end
+
+    local chapters = {}
+    for _, item in ipairs(json.data) do
+        local nSort = item.n_sort
+        if nSort then
+            local title = item.title or ("Chapter " .. tostring(nSort))
+            local cleanTitle = string_clean(regex_replace(title, "<[^>]+>", ""))
+            -- Use /novel/ instead of /book/ for Novel Phoenix
+            local chUrl = baseUrl .. "/novel/" .. bookSlug .. "/chapter-" .. tostring(nSort)
+            table.insert(chapters, { title = cleanTitle, url = chUrl })
+        end
+    end
+
+    table.sort(chapters, function(a, b)
+        local na = tonumber(a.url:match("chapter%-(%d+)$")) or 0
+        local nb = tonumber(b.url:match("chapter%-(%d+)$")) or 0
+        return na < nb
+    end)
+
+    return chapters
 end
 
+-- (Optional) Fallback using HTML pagination – kept for reference
+--[[
 function getChapterList(bookUrl)
     local bookSlug = bookUrl:match("/([^/]+)$")
     local firstPageUrl = baseUrl .. "/novel/" .. bookSlug .. "/chapters?page=1"
-
     local r = http_get(firstPageUrl)
     if not r.success then return {} end
 
@@ -140,17 +227,8 @@ function getChapterList(bookUrl)
 
     local function parsePage(html)
         local res = {}
-        for _, li in ipairs(html_select(html, ".chapter-list li")) do
-            local a = html_select_first(li.html, "a[href*='/chapter-']")
-            if a then
-                local dt = html_attr(li.html, "time[datetime]", "datetime")
-                local uploaded = (dt and dt ~= "") and parseDateTime(dt) or nil
-                table.insert(res, {
-                    title    = string_clean(a.title),
-                    url      = absUrl(a.href),
-                    uploaded = uploaded
-                })
-            end
+        for _, a in ipairs(html_select(html, "a[href*='/chapter-']")) do
+            table.insert(res, { title = string_clean(a.title), url = absUrl(a.href) })
         end
         return res
     end
@@ -182,14 +260,9 @@ function getChapterList(bookUrl)
             if chunkEnd < maxPage then sleep(2000) end
         end
     end
-    -- Final sort by chapter number to guarantee correct order
-    table.sort(allChapters, function(a, b)
-        local na = tonumber(a.url:match("chapter%-(%d+)")) or 0
-        local nb = tonumber(b.url:match("chapter%-(%d+)")) or 0
-        return na < nb
-    end)
     return allChapters
 end
+]]
 
 function getChapterListHash(bookUrl)
     local r = http_get(bookUrl)
@@ -232,6 +305,31 @@ function getBookRating(bookUrl)
     if not r.success then return nil end
     local el = html_select_first(r.body, ".rating .nub")
     return el and string_clean(el.text) or nil
+end
+
+-- ── Status / Last update ────────────────────────────────────────────────────
+
+-- Статус книги: <strong class="ongoing">Ongoing</strong> /
+-- <strong class="completed">Completed</strong> — текст как на сайте.
+function getBookStatus(bookUrl)
+    local html = fetchBookPage(bookUrl)
+    if not html then return nil end
+    local el = html_select_first(html, "strong.ongoing, strong.completed")
+    return el and string_clean(el.text) or nil
+end
+
+-- Дата обновления последней главы: <p class="update">Updated 8 hours ago</p>.
+-- На странице есть второй <p class="update"> ("Average score is 4.6" в блоке
+-- отзывов) — перебираем все и берём первый, кто проходит формат сайта
+-- (тот самый "Updated N units ago"), остальные normalizeUpdateDate отбрасывает.
+function getBookLastUpdate(bookUrl)
+    local html = fetchBookPage(bookUrl)
+    if not html then return nil end
+    for _, el in ipairs(html_select(html, ".update")) do
+        local d = normalizeUpdateDate(string_clean(el.text))
+        if d then return d end
+    end
+    return nil
 end
 
 -- ── Filters ─────────────────────────────────────────────────────────────
