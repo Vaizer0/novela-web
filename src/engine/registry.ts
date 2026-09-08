@@ -141,6 +141,12 @@ export async function getSourceRuntime(entry: SourceEntry): Promise<LuaSource> {
   if (cached) return cached;
   const src = await LuaSource.load(await entry.getCode(), `${entry.id}.lua`, defaultFetcher);
 
+  // A few upstream Lua extensions use small compatibility helpers that are
+  // provided by newer NoveLA builds but are absent from the base Lua standard
+  // library (for example global string_lower()).
+  src.runtime.lua.global.set("string_lower", (value: string) => String(value ?? "").toLowerCase());
+  src.runtime.lua.global.set("string_upper", (value: string) => String(value ?? "").toUpperCase());
+
   // Reader/export code uses this direct page fetch for chapter HTML. Do not
   // allow a transport failure to be mistaken for an empty chapter and cached.
   const fetchPage = src.fetchPage.bind(src);
