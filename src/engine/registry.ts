@@ -48,6 +48,7 @@ export function metaFromCode(code: string, fileName: string): SourceMeta {
 
 const ENABLED_KEY = "enabledSources";
 const CUSTOM_IMPORT_MIGRATION_KEY = "customLuaSourcesEnabledV1";
+const BUNDLED_IMPORT_MIGRATION_KEY = "bundledLuaSourcesEnabledV1";
 
 /** null = everything enabled (fresh install default). */
 export function getEnabledSources(): Set<string> | null {
@@ -113,6 +114,20 @@ export async function listSources(): Promise<SourceEntry[]> {
       setEnabledSources(enabled);
     }
     localStorage.setItem(CUSTOM_IMPORT_MIGRATION_KEY, "1");
+  }
+
+  // Bundled Lua sources are part of the application, not optional imports.
+  // On the first build that ships the bundled collection, upgrade any older
+  // explicit source list by enabling every currently bundled source once.
+  // This prevents an old empty/stale enabledSources value from making Browse
+  // appear to have no working plugins after an app upgrade.
+  if (localStorage.getItem(BUNDLED_IMPORT_MIGRATION_KEY) !== "1") {
+    const enabled = getEnabledSources();
+    if (enabled !== null && bundled.length > 0) {
+      for (const entry of bundled) enabled.add(entry.id);
+      setEnabledSources(enabled);
+    }
+    localStorage.setItem(BUNDLED_IMPORT_MIGRATION_KEY, "1");
   }
 
   return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
