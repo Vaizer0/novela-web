@@ -17,7 +17,9 @@ const CONFIG_KEY = "translationConfig";
 const DEFAULT_CONFIG: TranslationConfig = { backend: "google-simple", fromLang: "auto", toLang: "en" };
 const GOOGLE_URL = "https://translate.googleapis.com/translate_a/single";
 const GOOGLE_BATCH_URL = "https://translate.googleapis.com/translate_a/t";
+const ALL_ORIGINS_URL = "https://api.allorigins.win/raw?url=";
 const REQUEST_TIMEOUT_MS = 15000;
+const GOOGLE_MAX_CHARS = 1800;
 const GOOGLE_BATCH_CHARS = 8000;
 
 export function getTranslationConfig(): TranslationConfig {
@@ -68,11 +70,6 @@ function cacheKey(backend: string, cfg: TranslationConfig, text: string): Promis
   return sha256Hex(text).then((h) => `${backend}|${cfg.fromLang}|${cfg.toLang}|${h}`);
 }
 
-/**
- * Browser-safe Google transport. NoveLA can call Google directly with OkHttp;
- * the web app uses the existing server-side proxy because browser CORS cannot
- * be assumed for Google's internal translation endpoint.
- */
 async function viaProxy(url: string, init: RequestInit = {}): Promise<Response> {
   const res = await withTimeout(fetch(FETCH_ENDPOINT, {
     method: "POST",
@@ -104,43 +101,93 @@ function googleSingleUrl(text: string, cfg: TranslationConfig): string {
   return u.toString();
 }
 
-/** Mirrors NoveLA's GoogleFree request strategy: GET for short text,
- * form-urlencoded POST for larger text, retry once, then surface failure. */
+function splitForGoogle(text: string): string[] {
+  if (text.length <= GOOGLE_MAX_CHARS) return [text];
+  const chunks: string[] = [];
+  let rest = text;
+  while (rest.length > GOOGLE_MAX_CHARS) {
+    const window = rest.slice(0, GOOGLE_MAX_CHARS + 1);
+    let cut = Math.max(window.lastIndexOf("\n"), window.lastIndexOf(" "), window.lastIndexOf("。"), window.lastIndexOf("，"));
+    if (cut < Math.floor(GOOGLE_MAX_CHARS * 0.55)) cut = GOOGLE_MAX_CHARS;
+    chunks.push(rest.slice(0, cut));
+    rest = rest.slice(cut).replace(/^\s+/, "");
+  }
+  if (rest) chunks.push(rest);
+  return chunks;
+}
+
+async function directGoogle(text: string, cfg: TranslationConfig): Promise<string> {
+  const url = googleSingleUrl(text, cfg);
+  const response = await withTimeout(fetch(url, {
+    method: "GET",
+    headers: { Accept: "application/json, text/plain, */*" },
+    mode: "cors",
+    credentials: "omit",
+  }));
+  if (!response.ok) throw new Error(`Google HTTP ${response.status}`);
+  return parseGoogle(await response.text());
+}
+
+async function allOriginsGoogle(text: string, cfg: TranslationConfig): Promise<string> {
+  const target = googleSingleUrl(text, cfg);
+  const response = await withTimeout(fetch(`${ALL_ORIGINS_URL}${encodeURIComponent(target)}`, {
+    method: "GET",
+    headers: { Accept: "application/json, text/plain, */*" },
+    mode: "cors",
+    credentials: "omit",
+  }));
+  if (!response.ok) throw new Error(`Google fallback HTTP ${response.status}`);
+  return parseGoogle(await response.text());
+}
+
 async function translateGoogleFree(text: string, cfg: TranslationConfig): Promise<string> {
   if (!text.trim()) return text;
-  let lastError: unknown = null;
-  let seeded = false;
+  const chunks = splitForGoogle(text);
+  const out: string[] = [];
+  let lastError: Error | null = null;
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const large = text.length > 500;
-      const response = large
-        ? await viaProxy(GOOGLE_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({ client: "gtx", sl: cfg.fromLang, tl: cfg.toLang, dt: "t", q: text }).toString(),
-          })
-        : await viaProxy(googleSingleUrl(text, cfg));
+  for (const chunk of chunks) {
+    let translated: string | null = null;
 
-      const body = await response.text();
-      if (response.status === 429 && !seeded) {
-        seeded = true;
-        try { await viaProxy("https://translate.google.com/?hl=en"); } catch { /* retry anyway */ }
-        continue;
-      }
-      if (!response.ok) throw new Error(`Google Translate HTTP ${response.status}`);
-      return parseGoogle(body);
-    } catch (error) {
-      lastError = error;
-      if (attempt === 0) await new Promise((resolve) => window.setTimeout(resolve, 250));
+    // 1) Direct Google request. This avoids dependency on the Netlify plan.
+    try { translated = await directGoogle(chunk, cfg); } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
     }
+
+    // 2) Existing NoveLA-compatible server proxy when available.
+    if (translated == null) {
+      try {
+        const response = chunk.length > 500
+          ? await viaProxy(GOOGLE_URL, {
+              method: "POST",
+              headers: { "Content-Type": "application/x-www-form-urlencoded" },
+              body: new URLSearchParams({ client: "gtx", sl: cfg.fromLang, tl: cfg.toLang, dt: "t", q: chunk }).toString(),
+            })
+          : await viaProxy(googleSingleUrl(chunk, cfg));
+        if (!response.ok) throw new Error(`Google proxy HTTP ${response.status}`);
+        translated = parseGoogle(await response.text());
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+      }
+    }
+
+    // 3) Last browser-safe fallback for GitHub Pages when Netlify is unavailable.
+    if (translated == null) {
+      try { translated = await allOriginsGoogle(chunk, cfg); } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+      }
+    }
+
+    if (translated == null) {
+      throw new Error(`Translation failed: ${lastError?.message ?? "all Google transports failed"}`);
+    }
+    out.push(translated);
   }
-  throw lastError instanceof Error ? lastError : new Error("Google Translate request failed");
+
+  return out.join(" ");
 }
 
 async function translateGoogleEnhanced(texts: string[], cfg: TranslationConfig): Promise<string[]> {
-  // Keep the existing backend name, but use NoveLA-style Google requests with
-  // paragraph-sized units. A failed batch falls back to independent requests.
   const out = texts.slice();
   for (let start = 0; start < texts.length;) {
     let end = start;
@@ -149,6 +196,7 @@ async function translateGoogleEnhanced(texts: string[], cfg: TranslationConfig):
       size += texts[end].length + 1;
       end += 1;
     }
+
     const batch = texts.slice(start, end);
     const form = new URLSearchParams();
     for (const text of batch) form.append("q", text);
@@ -156,6 +204,7 @@ async function translateGoogleEnhanced(texts: string[], cfg: TranslationConfig):
     u.searchParams.set("client", "gtx");
     u.searchParams.set("sl", cfg.fromLang);
     u.searchParams.set("tl", cfg.toLang);
+
     try {
       const response = await viaProxy(u.toString(), {
         method: "POST",
@@ -173,6 +222,7 @@ async function translateGoogleEnhanced(texts: string[], cfg: TranslationConfig):
     } catch {
       for (let i = 0; i < batch.length; i += 1) out[start + i] = await translateGoogleFree(batch[i], cfg);
     }
+
     start = end;
     if (start < texts.length) await new Promise((resolve) => window.setTimeout(resolve, 400));
   }
