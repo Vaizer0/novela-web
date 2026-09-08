@@ -1,8 +1,17 @@
+.desktop-sidebar {
+  position: sticky;
+  overflow: visible;
+  z-index: 40;
+  transition: width .22s ease, flex-basis .22s ease, padding .22s ease;
+}
+
 .sidebar-top {
+  position: relative;
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 8px;
+  min-height: 40px;
 }
 
 .sidebar-top .brand {
@@ -11,20 +20,26 @@
 }
 
 .sidebar-toggle {
-  flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
+  position: absolute;
+  right: -15px;
+  top: 3px;
+  z-index: 100;
+  width: 30px;
+  height: 30px;
   display: grid;
   place-items: center;
   padding: 0 !important;
-  border-radius: 10px !important;
+  border-radius: 999px !important;
   font-size: 1.25rem;
   line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 5px 18px rgba(0,0,0,.16);
 }
 
 .sidebar-collapsed .desktop-sidebar {
   width: 76px;
-  flex-basis: 76px;
+  flex: 0 0 76px;
   padding-left: 10px;
   padding-right: 10px;
 }
@@ -45,8 +60,15 @@
   display: none;
 }
 
+.sidebar-collapsed .side-nav {
+  width: 100%;
+  position: relative;
+  z-index: 1;
+}
+
 .sidebar-collapsed .side-nav a {
   justify-content: center;
+  width: 100%;
   padding: 12px 0;
 }
 
