@@ -1,13 +1,174 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>novela-web</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='UTF-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<meta name='theme-color' content='#0f0f1a'>
+<meta name='description' content='Read novels and manga. Extension support, TTS, translation.'>
+<title>NoveLA</title>
+<link rel='manifest' href='manifest.json'>
+<link rel='stylesheet' href='css/main.css'>
+<link rel='stylesheet' href='css/reader.css'>
+</head>
+<body data-theme='default'>
+<canvas id='bg-canvas'></canvas>
+<div id='toast-container'></div>
+<div id='loader-overlay'><div class='loader-spinner'></div><div id='loader-text'>Loading...</div></div>
+<div id='app'>
+
+<div id='screen-library' class='screen active'>
+  <div class='screen-header'>
+    <span class='screen-title'>Library</span>
+    <button class='btn btn-ghost btn-sm' data-action='import-epub'>Import</button>
+    <button class='btn btn-ghost btn-sm' data-action='create-backup'>Backup</button>
+  </div>
+  <input id='lib-search-inp' class='header-search' type='text' placeholder='Search library...'>
+  <div class='filter-bar'>
+    <button class='btn btn-ghost btn-sm' data-filter='all'>All</button>
+    <button class='btn btn-ghost btn-sm' data-filter='unread'>Unread</button>
+    <button class='btn btn-ghost btn-sm' data-sort='title'>A-Z</button>
+    <button class='btn btn-ghost btn-sm' data-sort='updatedAt'>Recent</button>
+    <button class='btn btn-ghost btn-sm' data-action='lib-view-grid'>Grid</button>
+    <button class='btn btn-ghost btn-sm' data-action='lib-view-list'>List</button>
+  </div>
+  <div id='lib-grid' class='lib-grid-wrap'></div>
+</div>
+
+<div id='screen-finder' class='screen'>
+  <div class='screen-header'>
+    <span id='finder-title' class='screen-title'>Find</span>
+  </div>
+  <input id='finder-search' class='header-search' type='text' placeholder='Search this source...'>
+  <div id='finder-sources'></div>
+  <div id='finder-results'></div>
+</div>
+
+<div id='screen-history' class='screen'>
+  <div class='screen-header'><span class='screen-title'>History</span></div>
+  <div id='history-list'></div>
+</div>
+
+<div id='screen-extensions' class='screen'>
+  <div class='screen-header'><span class='screen-title'>Extensions</span></div>
+  <div class='filter-bar'>
+    <button class='btn btn-primary btn-sm' data-action='install-ext-url'>Install URL</button>
+    <button class='btn btn-ghost btn-sm' data-action='browse-ext-index'>Browse Index</button>
+  </div>
+  <input id='ext-search' class='header-search' type='text' placeholder='Filter extensions...'>
+  <div id='ext-index-panel'></div>
+  <div id='ext-list'></div>
+</div>
+
+<div id='screen-settings' class='screen'>
+  <div class='screen-header'><span class='screen-title'>Settings</span></div>
+  <div id='settings-content'></div>
+</div>
+
+<div id='screen-reader' class='screen'>
+  <div class='reader-toolbar'>
+    <button class='reader-back-btn' data-action='go-back'>&#8592;</button>
+    <span id='reader-chapter-title'></span>
+    <button class='btn btn-ghost btn-sm' data-action='reader-translate'>Translate</button>
+  </div>
+  <div id='reader-content'></div>
+  <div class='tts-bar'>
+    <button id='tts-play-btn' data-action='tts-play'>&#9654;</button>
+    <button id='tts-pause-btn' data-action='tts-pause'>&#9646;&#9646;</button>
+    <button id='tts-stop-btn' data-action='tts-stop'>&#9632;</button>
+    <span class='tts-speed-label'>Speed</span>
+    <input id='tts-speed-slider' type='range' min='0.5' max='3' step='0.1' value='1'>
+    <span id='tts-speed-val'>1x</span>
+  </div>
+  <div class='reader-nav'>
+    <button id='reader-prev-btn' class='btn btn-ghost btn-sm' data-action='reader-prev'>&#8592; Prev</button>
+    <button id='reader-next-btn' class='btn btn-ghost btn-sm' data-action='reader-next'>Next &#8594;</button>
+  </div>
+</div>
+
+<div id='screen-manga' class='screen'>
+  <div class='manga-toolbar'>
+    <button class='reader-back-btn' data-action='go-back'>&#8592;</button>
+    <button class='btn btn-ghost btn-sm' data-action='manga-prev-ch'>&#171; Ch</button>
+    <span id='manga-chapter-title'></span>
+    <button class='btn btn-ghost btn-sm' data-action='manga-next-ch'>Ch &#187;</button>
+    <button class='btn btn-ghost btn-sm' data-action='manga-toggle-mode'>Mode</button>
+  </div>
+  <div id='manga-content'></div>
+  <div class='manga-pager-nav'>
+    <button class='btn btn-ghost btn-sm' data-action='manga-prev-page'>&#8592; Prev</button>
+    <span id='manga-page-info'></span>
+    <button class='btn btn-ghost btn-sm' data-action='manga-next-page'>Next &#8594;</button>
+  </div>
+</div>
+
+<div id='screen-bookinfo' class='screen'>
+  <div class='screen-header'>
+    <button class='reader-back-btn' data-action='go-back'>&#8592;</button>
+    <span class='screen-title'>Book Info</span>
+  </div>
+  <div class='bi-header'>
+    <img id='bi-cover' src='' alt='Book cover'>
+    <div class='bi-meta'>
+      <div id='bi-title'></div>
+      <div id='bi-author'></div>
+      <div id='bi-status'></div>
+      <div id='bi-genres'></div>
+    </div>
+  </div>
+  <div id='bi-desc'></div>
+  <button id='bi-add-btn' class='btn btn-primary'>Add to Library</button>
+  <div class='bi-chapter-heading'>Chapters</div>
+  <div id='bi-chapters'></div>
+</div>
+
+<div id='screen-search' class='screen'>
+  <div class='screen-header'><span class='screen-title'>Search</span></div>
+  <input id='global-search-inp' class='header-search' type='text' placeholder='Search all sources...'>
+  <div id='search-results'></div>
+</div>
+
+<div id='screen-migration' class='screen'>
+  <div class='screen-header'>
+    <button class='reader-back-btn' data-action='go-back'>&#8592;</button>
+    <span class='screen-title'>Migration</span>
+  </div>
+  <div id='mig-content'></div>
+</div>
+
+<nav class='bottom-nav'>
+  <button class='nav-item active' data-screen='library'><span class='nav-icon'>&#128218;</span>Library</button>
+  <button class='nav-item' data-screen='finder'><span class='nav-icon'>&#128270;</span>Find</button>
+  <button class='nav-item' data-screen='history'><span class='nav-icon'>&#128336;</span>History</button>
+  <button class='nav-item' data-screen='extensions'><span class='nav-icon'>&#128268;</span>Exts</button>
+  <button class='nav-item' data-screen='settings'><span class='nav-icon'>&#9881;</span>Settings</button>
+</nav>
+</div>
+
+<script src='js/i18n.js'></script>
+<script src='js/db.js'></script>
+<script src='js/settings.js'></script>
+<script src='js/scraper.js'></script>
+<script src='js/utils.js'></script>
+<script src='js/plugins.js'></script>
+<script src='js/tts.js'></script>
+<script src='js/translation.js'></script>
+<script src='js/backup.js'></script>
+<script src='js/epub.js'></script>
+<script src='js/reader.js'></script>
+<script src='js/manga.js'></script>
+<script src='js/library.js'></script>
+<script src='js/catalog.js'></script>
+<script src='js/search.js'></script>
+<script src='js/extensions.js'></script>
+<script src='js/migration.js'></script>
+<script src='js/minigames.js'></script>
+<script src='js/app.js'></script>
+<script>
+if('serviceWorker' in navigator){window.addEventListener('load',()=>{navigator.serviceWorker.register('sw.js').catch(e=>console.log('SW:',e));});}
+window.addEventListener('load',function(){
+  var s=document.getElementById('tts-speed-slider');
+  if(s){s.addEventListener('input',function(){var v=parseFloat(this.value);var el=document.getElementById('tts-speed-val');if(el)el.textContent=v.toFixed(1)+'x';if(typeof TTS!=='undefined'&&TTS.setRate)TTS.setRate(v);});}
+});
+</script>
+</body>
 </html>

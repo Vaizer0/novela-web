@@ -1,0 +1,13 @@
+{
+  "name": "NoveLA",
+  "short_name": "NoveLA",
+  "start_url": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#0f0f1a",
+  "background_color": "#0f0f1a",
+  "description": "Read novels and manga. Extension support, TTS, translation.",
+  "icons": [
+    {"src": "assets/icon.svg", "sizes": "any", "type": "image/svg+xml"}
+  ]
+}

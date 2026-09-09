@@ -1,32 +1,41 @@
-# React + TypeScript + Vite
+# NoveLA Web
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+A fully functional web port of the [NoveLA Android app](https://github.com/Hndk0/NoveLA) — read novels and manga online with extension support, accurate TTS word highlighting, translation, and offline-first PWA support.
 
-Currently, two official plugins are available:
+## Live Site
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Deployed to GitHub Pages automatically on every push to main.
 
-## React Compiler
+## Features
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- **Multi-source extension plugin system** — install JS extensions to browse and fetch books from any source
+- **IndexedDB persistence** — all library data, chapters, history and settings stored locally
+- **Accurate TTS word-boundary highlighting** — uses SpeechSynthesis boundary events for real-time, drift-free word highlighting
+- **Multi-language translation** — Google (free), Gemini, OpenAI/custom
+- **20+ themes** — dark, light, catppuccin, nord, matrix, doom, and more
+- **EPUB / FB2 import** — import local files directly into your library
+- **Reading history, library management, manga reader** — full feature parity with the Android app
+- **Interactive cinematic background** — animated starfield + asteroid mini-game (click asteroids to destroy them)
+- **PWA / installable** — add to home screen for offline use
+- **Fully responsive** — works on mobile, tablet, and desktop
 
-## Expanding the Oxlint configuration
+## Development
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+# Serve locally (IndexedDB requires a proper origin)
+python3 -m http.server 8080
+# or use VS Code Live Server
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## Extensions
+
+Go to the Extensions tab to install extensions via URL or browse the built-in index.
+Extensions are JavaScript modules that implement: `fetchPopular`, `fetchLatest`, `fetchChapterList`, `getBookInfo`, `search`.
+
+## Deployment
+
+Push to the `main` branch — GitHub Actions automatically deploys to GitHub Pages.
+
+## License
+
+MIT
