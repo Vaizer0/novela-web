@@ -1,0 +1,27 @@
+#screen-reader{padding:0;display:flex;flex-direction:column;}
+.reader-toolbar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:50;flex-shrink:0;}
+.reader-back-btn{background:none;border:none;color:var(--text);font-size:22px;cursor:pointer;padding:4px;line-height:1;}
+#reader-chapter-title{flex:1;font-size:14px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+#reader-content{flex:1;padding:20px 16px;overflow-y:auto;background:var(--reader-bg);font-size:var(--rd-size);font-family:var(--rd-font);line-height:var(--rd-lh);text-align:var(--rd-ta);-webkit-overflow-scrolling:touch;}
+.reader-para{margin-bottom:var(--rd-ps);color:var(--text);word-break:break-word;}
+.reader-para-trans{margin-bottom:var(--rd-ps);color:var(--accent2);font-style:italic;border-left:3px solid var(--accent);padding-left:10px;word-break:break-word;}
+.tts-word{display:inline;cursor:pointer;border-radius:3px;transition:background .1s;}
+.tts-word:hover{background:rgba(255,255,255,.08);}
+.tts-highlight{background:var(--tts-hl)!important;color:#fff!important;border-radius:3px;}
+.tts-bar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface);border-top:1px solid var(--border);flex-shrink:0;}
+#tts-play-btn,#tts-pause-btn,#tts-stop-btn{background:none;border:none;color:var(--text);font-size:22px;cursor:pointer;padding:4px;line-height:1;transition:color var(--trans);}
+#tts-play-btn:hover,#tts-pause-btn:hover,#tts-stop-btn:hover{color:var(--accent);}
+#tts-pause-btn{display:none;}
+.tts-speed-label{font-size:12px;color:var(--text2);}
+#tts-speed-slider{width:80px;}
+#tts-speed-val{font-size:12px;color:var(--text2);min-width:26px;}
+.reader-nav{display:flex;justify-content:space-between;padding:8px 12px;background:var(--surface);border-top:1px solid var(--border);flex-shrink:0;}
+#screen-manga{padding:0;display:flex;flex-direction:column;}
+.manga-toolbar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;}
+#manga-chapter-title{flex:1;font-size:13px;color:var(--text);text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+#manga-content{flex:1;overflow-y:auto;background:#000;-webkit-overflow-scrolling:touch;}
+.manga-img-wrap{width:100%;text-align:center;}
+.manga-page{width:100%;max-width:800px;display:block;margin:0 auto;}
+.manga-page-single{max-height:calc(100vh - 120px);width:auto;max-width:100%;display:block;margin:0 auto;}
+.manga-pager-nav{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--surface);border-top:1px solid var(--border);flex-shrink:0;}
+#manga-page-info{font-size:13px;color:var(--text2);}
